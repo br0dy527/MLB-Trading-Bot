@@ -9,6 +9,12 @@ You're operating inside the **WAT framework** (Workflows, Agents, Tools). Read `
   - Optional argument: date in YYYY-MM-DD format (defaults to today)
   - Output: Notion Daily Reports page + rows in Picks Tracker DB
 
+- `/mlb-baseline` — Retroactive analysis of season's opening week; system test
+  - Trigger phrases: "season baseline", "initial research", "early season analysis", "retroactive picks"
+  - Optional argument: start date in YYYY-MM-DD format (defaults to 2026-03-27)
+  - Output: Standalone Notion research page under MLB Bot Dashboard + `.tmp/baseline_page_id.json`
+  - Re-run after April 14 (3 weeks) and May 1 (full month) for calibration updates
+
 ## Hard Rules
 
 - **Never recommend a bet at worse than -115 odds.** Odds of -116 or longer are ineligible. Only -115, -114, ..., -100, +100, +110, etc. qualify.
@@ -35,7 +41,7 @@ Notion:     Daily Reports DB + Picks Tracker DB
 | fetch_lineups.py | MLB Stats API | None |
 | fetch_pitcher_stats.py | pybaseball (Baseball Savant / FanGraphs) | None |
 | fetch_team_stats.py | pybaseball + MLB Stats API | None |
-| fetch_odds.py | WebSearch (upgrade to Odds API later) | None / ODDS_API_KEY |
+| fetch_odds.py | Tavily batched search (upgrade to Odds API later) | TAVILY_API_KEY / ODDS_API_KEY |
 | fetch_weather.py | Open-Meteo API | None |
 | fetch_park_factors.py | pybaseball (FanGraphs) | None |
 | fetch_historical_results.py | Notion Picks Tracker DB | NOTION_TOKEN |
@@ -46,7 +52,8 @@ Notion:     Daily Reports DB + Picks Tracker DB
 - `NOTION_TOKEN` — Notion integration token
 - `NOTION_PICKS_DB_ID` — Picks Tracker database ID
 - `NOTION_REPORTS_DB_ID` — Daily Reports database ID
-- `ODDS_API_KEY` — The Odds API key (add when upgrading from WebSearch)
+- `TAVILY_API_KEY` — Tavily Search API (4 batched queries/day: odds, lineups, injuries, line movement)
+- `ODDS_API_KEY` — The Odds API key (add when upgrading from Tavily)
 
 ## Self-Learning Loop
 

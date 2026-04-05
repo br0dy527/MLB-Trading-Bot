@@ -1,0 +1,19 @@
+{
+  "name": "mlb-betting-bot",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "npx trigger.dev@latest dev",
+    "deploy": "npx trigger.dev@latest deploy"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.82.0",
+    "@notionhq/client": "^5.16.0",
+    "@trigger.dev/sdk": "^4.4.3"
+  },
+  "devDependencies": {
+    "@trigger.dev/build": "^4.4.3",
+    "@types/node": "^25.5.2",
+    "typescript": "^5.9.3"
+  }
+}

@@ -28,12 +28,22 @@ Reads: MLB Stats API, pybaseball, Open-Meteo, park factor database.
 Writes: `.tmp/game_data_[date].json`
 Continue with partial data if any individual tool fails — never abort.
 
-### 4. Fetch odds and injury news via WebSearch
-For each game in the JSON:
-- Run the `odds_search_queries` to get current lines
-- Flag eligible bets (-115 or better)
-- Detect line movement (opening vs. current)
-- Search injury reports for both teams
+### 4. Fetch web data via 4 batched Tavily searches
+Run exactly 4 searches — never per-game. This keeps daily usage to ~4 credits (~120/month on free plan).
+
+| # | Query | What we extract |
+|---|---|---|
+| 1 | `"MLB moneyline run line over under odds all games today [DATE]"` | All lines, totals, open/current odds |
+| 2 | `"MLB confirmed starting lineups all games today [DATE]"` | Lineup status, batting orders, confirmed starters |
+| 3 | `"MLB injury report all teams today [DATE] scratches"` | Key absences, late scratches, IL moves |
+| 4 | `"MLB line movement sharp money steam today [DATE]"` | Reverse line movement signals, sharp action |
+
+Map each result back to the games in the JSON by team name. If a game cannot be matched (e.g. doubleheader confusion), note "Search data unavailable" for that game — do not run an extra search.
+
+After mapping:
+- Flag eligible bets (-115 or better) — all others ineligible, full stop
+- Note reverse line movement (Pillar 8 signal)
+- Apply -10 confidence if lineup is unconfirmed
 
 ### 5. Analyze every game
 Apply the full 10-pillar analysis + devil's advocate protocol from:
@@ -122,7 +132,8 @@ Notion Daily Reports DS:  collection://052dd723-1747-47c8-ada7-a0647ed241a2
 *Update this section when you discover rate limits, data quirks, or process improvements.*
 
 - **pybaseball cache:** Always runs `pybaseball.cache.enable()` — first run slow, subsequent fast.
-- **Odds API:** Not yet active. Using WebSearch for odds in Phase 1. Single search per game.
+- **Tavily search budget:** 4 searches per daily run = ~120/month. Free plan limit is 1,000/month. Never search per-game — always batch all games into one query per category.
+- **Odds API:** Not yet active. Using Tavily batched search for odds. Upgrade path: swap Tavily odds query for Odds API when ready.
 - **MLB Stats API lineups:** Confirmed lineups available ~3 hours before first pitch. Morning run (9:30 AM) will often have probables only.
 - **Coors Field:** Always add context about altitude. Park factor 119 — every total should be adjusted +1.5-2 runs vs. neutral park baseline.
 - **Season start:** Early April data (first 1-2 weeks) has very small samples. Weight recent trends heavily but flag small sample sizes explicitly.
