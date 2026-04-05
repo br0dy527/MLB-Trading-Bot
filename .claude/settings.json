@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 tools/fetch_odds.py)",
+      "Bash(python3 tools/fetch_pitcher_stats.py \"Bailey Ober\" 641927 2026)",
+      "Bash(pip3 install:*)",
+      "Bash(python3 tools/compile_game_data.py 2026-04-03)",
+      "mcp__claude_ai_Notion__notion-search",
+      "mcp__claude_ai_Notion__notion-create-pages",
+      "Edit(/.claude/skills/mlb-picks/**)"
+    ]
+  }
+}

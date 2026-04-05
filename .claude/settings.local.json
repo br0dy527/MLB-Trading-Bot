@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python tools/fetch_schedule.py 2026-04-03)",
+      "Bash(python3 tools/fetch_schedule.py 2026-04-03)"
+    ]
+  }
+}

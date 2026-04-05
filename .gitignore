@@ -1,0 +1,8 @@
+.env
+.tmp/
+__pycache__/
+*.pyc
+*.pyo
+.pybaseball/
+*.egg-info/
+.DS_Store
