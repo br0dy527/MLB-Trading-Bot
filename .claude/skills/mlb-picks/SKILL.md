@@ -91,6 +91,11 @@ Also search for injury news: "[Home Team] injury report today" and "[Away Team] 
 Read: `.claude/skills/mlb-picks/analysis-framework.md`
 Read: `.claude/skills/mlb-picks/confidence-rubric.md`
 
+**Before scoring any game**, check `.tmp/baseline_page_id.json`. If it exists, apply the following as contextual notes in your devil's advocate sections (they do not override pillar scores):
+- Any FIP/ERA divergence flagged for today's starting pitcher (positive or negative regression signal)
+- Any team-level signal (overperforming/underperforming the model) for today's teams
+- Any park factor anomaly noted for today's venue (e.g. Coors playing cold, Progressive Field suppressing runs)
+
 For each game with at least one eligible bet:
 
 1. **Work through all 10 pillars** — direction + weight per pillar. No shortcuts.
@@ -176,6 +181,24 @@ Yesterday's results: [W-L if updated] | 30-day record: [W-L] | ROI: [+/-X units]
 
 Notion report: [URL]
 ```
+
+Then create and send a notification email using `gmail-create-draft` to `brody@br0dyllc.com`:
+
+**Subject:** `MLB Picks Ready — [date]`
+
+**Body:**
+```
+Bet of the Day: [Team] [Bet Type] ([Odds]) — [XX%] confidence
+Underdog of the Day: [Team] ML ([+Odds]) — [XX%] confidence
+Top 3: [Pick 1] | [Pick 2] | [Pick 3]
+
+Games analyzed: [N] | Eligible bets: [N]
+Yesterday: [W-L] | 30-day: [W-L] | ROI: [+/-X units]
+
+Full report: [Notion URL]
+```
+
+Note: The Gmail MCP supports draft creation only — after creating the draft, note "Draft created in Gmail — send manually or check inbox." in the terminal output.
 
 ---
 
