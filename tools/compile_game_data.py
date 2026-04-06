@@ -49,19 +49,24 @@ def utc_to_et(utc_str: str) -> str:
 # Main compiler
 # ---------------------------------------------------------------------------
 
-def compile_game_data(game_date: str = None) -> str:
+def compile_game_data(game_date: str = None, historical: bool = False) -> str:
     """
     Runs all data fetching tools for every game on game_date.
     Returns path to the written JSON file.
+    Set historical=True to include already-completed (Final) games.
     """
     game_date = game_date or str(date.today())
-    print(f"[compile] Fetching schedule for {game_date}...")
+    # Auto-detect historical mode: any date before today
+    if not historical and game_date < str(date.today()):
+        historical = True
+    print(f"[compile] Fetching schedule for {game_date} (historical={historical})...")
 
-    games_raw = fetch_schedule(game_date)
+    games_raw = fetch_schedule(game_date, include_final=historical)
 
     if not games_raw or (len(games_raw) == 1 and "error" in games_raw[0]):
         error_path = f".tmp/game_data_{game_date}.json"
-        result = {"date": game_date, "error": games_raw[0].get("error", "No games found"), "games": []}
+        error_msg = games_raw[0].get("error", "No games found") if games_raw else "No games found"
+        result = {"date": game_date, "error": error_msg, "games": []}
         os.makedirs(".tmp", exist_ok=True)
         with open(error_path, "w") as f:
             json.dump(result, f, indent=2)
@@ -223,7 +228,8 @@ def compile_game_data(game_date: str = None) -> str:
 
 def main():
     game_date = sys.argv[1] if len(sys.argv) > 1 else str(date.today())
-    path = compile_game_data(game_date)
+    historical = "--historical" in sys.argv or game_date < str(date.today())
+    path = compile_game_data(game_date, historical=historical)
 
     # Print summary
     with open(path) as f:

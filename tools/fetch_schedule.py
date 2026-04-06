@@ -59,7 +59,7 @@ VENUE_TO_PARK = {
 }
 
 
-def fetch_schedule(date_str: str) -> list:
+def fetch_schedule(date_str: str, include_final: bool = False) -> list:
     url = (
         f"https://statsapi.mlb.com/api/v1/schedule"
         f"?sportId=1&date={date_str}"
@@ -80,8 +80,8 @@ def fetch_schedule(date_str: str) -> list:
                 continue
 
             status = g.get("status", {}).get("abstractGameState", "")
-            if status == "Final":
-                continue  # Already played — skip for picks
+            if status == "Final" and not include_final:
+                continue  # Already played — skip for daily picks (use include_final=True for historical)
 
             home = g.get("teams", {}).get("home", {})
             away = g.get("teams", {}).get("away", {})
