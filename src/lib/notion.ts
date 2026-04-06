@@ -8,17 +8,17 @@ function getClient(): Client {
   return new Client({ auth: token });
 }
 
-// IDs from .env — use data source IDs for v5 SDK queries and page creation
-function picksDsId(): string {
-  const id = process.env.NOTION_PICKS_DS_ID;
-  if (!id) throw new Error("NOTION_PICKS_DS_ID is not set");
-  return id;
+function picksDbId(): string {
+  const id = process.env.NOTION_PICKS_DB_ID;
+  if (!id) throw new Error("NOTION_PICKS_DB_ID is not set");
+  // Normalize to hyphenated UUID format required by v5 SDK
+  return id.replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, "$1-$2-$3-$4-$5");
 }
 
-function reportsDsId(): string {
-  const id = process.env.NOTION_REPORTS_DS_ID;
-  if (!id) throw new Error("NOTION_REPORTS_DS_ID is not set");
-  return id;
+function reportsDbId(): string {
+  const id = process.env.NOTION_REPORTS_DB_ID;
+  if (!id) throw new Error("NOTION_REPORTS_DB_ID is not set");
+  return id.replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, "$1-$2-$3-$4-$5");
 }
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -75,7 +75,7 @@ export async function getYesterdayPendingPicks(yesterday: string): Promise<Pendi
   let cursor: string | undefined;
   do {
     const res = await notion.dataSources.query({
-      data_source_id: picksDsId(),
+      data_source_id: picksDbId(),
       start_cursor: cursor,
       filter: {
         and: [
@@ -126,7 +126,7 @@ export async function getRunningRecord(days = 30): Promise<RunningRecord> {
 
   do {
     const res = await notion.dataSources.query({
-      data_source_id: picksDsId(),
+      data_source_id: picksDbId(),
       start_cursor: cursor,
       filter: {
         and: [
@@ -166,7 +166,7 @@ export async function updateDailyReportResults(
   const notion = getClient();
 
   const res = await notion.dataSources.query({
-    data_source_id: reportsDsId(),
+    data_source_id: reportsDbId(),
     filter: { property: "Date", title: { contains: date } },
     page_size: 1,
   } as any);
@@ -197,7 +197,7 @@ export async function createDailyReport(data: DailyReportData): Promise<string> 
   });
 
   const page = await notion.pages.create({
-    parent: { data_source_id: reportsDsId(), type: "data_source_id" } as any,
+    parent: { type: "database_id", database_id: reportsDbId() },
     properties: {
       "Date":               { title: [{ text: { content: formattedDate } }] },
       "Bet of Day":         { rich_text: [{ text: { content: data.betOfDay } }] },
@@ -222,7 +222,7 @@ export async function logPick(pick: PickToLog): Promise<void> {
   const notion = getClient();
 
   await notion.pages.create({
-    parent: { data_source_id: picksDsId(), type: "data_source_id" } as any,
+    parent: { type: "database_id", database_id: picksDbId() },
     properties: {
       "Matchup":          { title: [{ text: { content: pick.matchup } }] },
       "Date":             { date: { start: pick.date } },
