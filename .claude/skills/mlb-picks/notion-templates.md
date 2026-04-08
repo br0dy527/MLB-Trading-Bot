@@ -124,24 +124,26 @@ Create a page in the Daily Reports database using `notion-create-pages` with par
 |---|---|---|
 | Bet of the Day | [pick] | [Win/Loss/Push] |
 | Underdog of Day | [pick] | [Win/Loss/Push] |
-| Top 3 | — | [W]-[L]-[P] |
-| All Game Picks | — | [W]-[L]-[P] |
-| **Overall** | — | **[W]-[L] ([Win%]) · [+/-X units]** |
-
-30-day running: [W]-[L] ([Win%]) · ROI: [+/-X units]
+| Top 3 | — | [W]-[L]-[P] ([Win%]) |
+| 30-Day Running | — | [W]-[L] ([Win%]) · ROI: [+/-X units] |
+| **Overall (Season)** | — | **[W]-[L] ([Win%]) · [+/-X units]** |
 
 ---
 
 ## Performance Context
 
-[3-4 sentences summarizing recent performance from historical data query.]
+[Paste `narrative` field from calibration_adjustments.json here verbatim.]
 
 **Last 30 days:** [W]-[L] overall | ROI: [+/-X.X] units
-**Bet of Day record:** [W]-[L] | **Underdog record:** [W]-[L] | **Top 3 record:** [W]-[L]
+**Bet of Day record:** [W]-[L] [adj: X] | **Underdog record:** [W]-[L] [adj: X] | **Top 3 record:** [W]-[L] [adj: X]
 
-**Calibration note:** [Confidence bucket performance vs. expected. E.g.: "80%+ picks are hitting at 71% over the last 30 days — on track with expectations."]
+**Calibration applied today:**
+- 80-95% bucket: [actual win%] vs [predicted win%] → adjustment [+/-X pts]
+- 70-79% bucket: [actual win%] vs [predicted win%] → adjustment [+/-X pts]
+- 60-69% bucket: [actual win%] vs [predicted win%] → adjustment [+/-X pts]
+- Global fallback: [+/-X pts] (used when bucket has <5 picks)
 
-**Pattern flagged:** [If any pattern from fetch_historical_results crossed the 15-pick threshold with >10% deviation, note it here with recommendation.]
+**Patterns flagged:** [From `patterns` field in calibration JSON, or "None detected yet."]
 
 ---
 

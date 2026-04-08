@@ -29,29 +29,31 @@ YESTERDAY'S SCORECARD — [Date]
 Bet of the Day:    [Pick] → WIN / LOSS / PUSH
 Underdog of Day:   [Pick] → WIN / LOSS / PUSH
 Top 3:             [W]-[L]-[P] ([Win%])
-All Game Picks:    [W]-[L]-[P] ([Win%])
-OVERALL:           [W]-[L]-[P] | [Win%] | [+/-X.X units ROI]
-
 30-Day Running:    [W]-[L] | [Win%] | [+/-X units]
-Bet of Day 30d:    [W]-[L] | [Win%]
-Underdog 30d:      [W]-[L] | [Win%]
+OVERALL (Season):  [W]-[L]-[P] | [Win%] | [+/-X.X units ROI]
 ```
 
 If yesterday had no picks (off day), output: "No picks yesterday — off day."
 
 ---
 
-## Step 2: Load Historical Performance
+## Step 2: Load Historical Performance + Update Calibration
 
-Run: `python3 tools/fetch_historical_results.py --days 30`
+Run: `python3 tools/update_calibration.py`
 
-Read the output carefully. Note:
+This runs the full calibration loop: queries Notion, computes adjustments, writes `.tmp/calibration_adjustments.json`, and updates `confidence-rubric.md`.
+
+Read the JSON output. Extract and hold these values for use in Step 5:
+- `by_bucket` — per-confidence-bucket adjustment (e.g. `{"80-95": {"adjustment": -15, ...}}`)
+- `by_bet_type` — per-bet-type adjustment (e.g. `{"Bet of Day": {"adjustment": -8, ...}}`)
+- `global_adjustment` — fallback when a bucket has insufficient data
+- `max_combined_adjustment` — cap on total calibration applied to any one pick
+- `narrative` — paste this into the Performance Context section of the Notion report
+
+Also note:
 - Overall W-L and ROI
-- Win rate by bet type (are underdogs or favorites performing better?)
-- Win rate by confidence bucket (is the rubric calibrated?)
-- Any structural patterns flagged (>15 picks, >10% deviation from expected)
-
-Use this context when making today's picks — it directly informs confidence adjustments.
+- Win rate by bet type and confidence bucket
+- Any structural patterns flagged (`patterns` field)
 
 ---
 
@@ -102,12 +104,23 @@ For each game with at least one eligible bet:
 2. **Calculate raw score** — sum of weighted signals
 3. **Compute base confidence** — normalize to 10-90
 4. **Apply qualitative adjustments** — from rubric table
-5. **Execute devil's advocate** (mandatory):
+5. **Apply calibration adjustment** (hard numeric, not optional):
+   - Determine this pick's confidence bucket (e.g. score is 78 → bucket "70-79")
+   - Determine the bet type you plan to assign (Bet of Day / Underdog / Top 3 / Game Pick)
+   - Look up `calibration_adjustments.json`:
+     - `bucket_adj = by_bucket[bucket]["adjustment"]` — use 0 if sample < 5
+     - `type_adj = by_bet_type[bet_type]["adjustment"]` — use 0 if sample < 5
+     - If bucket has insufficient data, use `global_adjustment` instead of `bucket_adj`
+   - `combined = bucket_adj + type_adj`
+   - If `abs(combined) > max_combined_adjustment` (25), scale: `combined = combined / abs(combined) * 25`
+   - `confidence = clamp(base + qualitative_adjustments + combined, 10, 95)`
+   - **Show your work:** state the bucket_adj, type_adj, combined, and final score explicitly
+6. **Execute devil's advocate** (mandatory):
    - Case FOR: 3-5 sentences, ≥2 specific data points
    - Case AGAINST: 3-5 sentences, ≥2 specific data points, ≥1 dealbreaker-level concern
    - Verdict: One sentence
-6. **Apply auto-caps** if conditions met
-7. **Select the best eligible bet type** for this game (ML, RL, total)
+7. **Apply auto-caps** if conditions met
+8. **Select the best eligible bet type** for this game (ML, RL, total)
 
 For games with NO eligible bets (all lines worse than -120): Note "No eligible bet" and move on.
 

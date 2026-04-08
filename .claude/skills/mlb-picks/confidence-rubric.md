@@ -46,7 +46,7 @@ Apply each relevant adjustment to the base score:
 | Pitcher career ERA vs. this team is notably worse than season avg | -4 |
 | Meaningless late-season game (eliminated team) | -8 |
 | Playoff race rubber game (high motivation) | +3 |
-| Calibration adjustment (see history below) | variable |
+| Calibration adjustment (from `.tmp/calibration_adjustments.json`) | bucket_adj + type_adj, capped at -25 combined |
 
 **Final score:** `confidence = clamp(base + sum(adjustments), 10, 95)`
 
@@ -81,40 +81,47 @@ After computing final score, apply caps if conditions are met:
 
 This section tracks actual vs. predicted win rates. Update after every 10+ picks accumulate in a bucket.
 
+**These tables are auto-managed by `tools/update_calibration.py`. Do not edit manually.**
+Numeric adjustments are the canonical source in `.tmp/calibration_adjustments.json`.
+
 ### By Confidence Bucket
 
-| Bucket | Predicted Win% | Actual Win% | Sample Size | Status |
-|---|---|---|---|---|
-| 80-95% | ~72% | — | 0 | No data yet |
-| 70-79% | ~65% | — | 0 | No data yet |
-| 60-69% | ~58% | — | 0 | No data yet |
-| 50-59% | ~52% | — | 0 | No data yet |
-
-*When actual win% deviates from predicted by >10% across 10+ picks, apply a calibration adjustment:*
-- Overconfident (actual << predicted): subtract 5-8 from scores in that bucket
-- Underconfident (actual >> predicted): add 3-5 to scores in that bucket
+<!-- AUTO:BUCKET_TABLE_START -->
+| Bucket | Predicted Win% | Actual Win% | Sample | Adjustment | Status |
+|---|---|---|---|---|---|
+| 80-95% | ~72% | — | 0 | 0 | Insufficient data (0 picks, need 5) |
+| 70-79% | ~65% | — | 0 | 0 | Insufficient data (0 picks, need 5) |
+| 60-69% | ~58% | — | 0 | 0 | Insufficient data (0 picks, need 5) |
+| 50-59% | ~52% | — | 0 | 0 | Insufficient data (0 picks, need 5) |
+<!-- AUTO:BUCKET_TABLE_END -->
 
 ### By Bet Type
 
-| Bet Type | Record | Win% | ROI |
-|---|---|---|---|
-| Bet of Day | — | — | — |
-| Underdog | — | — | — |
-| Top 3 | — | — | — |
-| Game Pick | — | — | — |
+<!-- AUTO:TYPE_TABLE_START -->
+| Bet Type | Record | Win% | ROI (units) | Adjustment |
+|---|---|---|---|---|
+| Bet of Day | — | — | — | 0 |
+| Underdog | — | — | — | 0 |
+| Top 3 | — | — | — | 0 |
+| Game Pick | — | — | — | 0 |
+<!-- AUTO:TYPE_TABLE_END -->
 
 ### Structural Edges Detected
 
-*Patterns with 15+ picks and >10% deviation from expectation. Update as patterns emerge.*
-
-| Pattern | Win% | Sample | Adjustment Applied |
-|---|---|---|---|
-| (none yet) | — | — | — |
+*Patterns with 15+ picks and >10% deviation from expectation. Populated automatically.*
 
 ### Last Updated
 
+<!-- AUTO:LAST_UPDATED_START -->
 Date: (not yet updated — season just started)
-Note: Calibration tracking begins once 10+ picks per bucket accumulate.
+
+Summary: No resolved picks yet. Calibration active once 5+ picks per bucket accumulate.
+
+Global fallback adjustment: +0.0 pts
+
+Patterns flagged:
+- None detected yet
+<!-- AUTO:LAST_UPDATED_END -->
 
 ---
 
