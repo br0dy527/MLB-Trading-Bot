@@ -17,7 +17,7 @@ You're operating inside the **WAT framework** (Workflows, Agents, Tools). Read `
 
 ## Hard Rules
 
-- **Never recommend a bet at worse than -115 odds.** Odds of -116 or longer are ineligible. Only -115, -114, ..., -100, +100, +110, etc. qualify.
+- **Never recommend a bet at worse than -120 odds.** Odds of -121 or longer are ineligible. Only -120, -119, ..., -100, +100, +110, etc. qualify.
 - Always run the full 10-pillar analysis — no shortcuts, no gut picks.
 - Devil's advocate sections must cite at least 2 specific data points each. Token counterpoints are rejected.
 - If lineups are unconfirmed, flag every affected pick with ⚠️ LINEUP PENDING.

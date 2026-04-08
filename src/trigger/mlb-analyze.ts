@@ -5,7 +5,7 @@ import { task } from "@trigger.dev/sdk/v3";
 import Anthropic from "@anthropic-ai/sdk";
 import {
   createDailyReport, logPick,
-  type DailyReportData, type PickToLog,
+  type DailyReportData, type PickToLog, type PickDetail,
 } from "../lib/notion.js";
 import type { FetchDataResult } from "./mlb-fetch-data.js";
 
@@ -57,6 +57,7 @@ export interface AnalyzePayload {
   fetchResult: FetchDataResult;
   runningRecord: { wins: number; losses: number; pushes: number };
   yesterdayScorecard: string; // pre-formatted markdown summary
+  recentPicks: PickDetail[];   // last 21 days of resolved picks for self-learning
 }
 
 export interface AnalyzeResult {
@@ -67,17 +68,137 @@ export interface AnalyzeResult {
   picksLogged: number;
 }
 
+// ─── Performance analysis context for self-learning loop ─────────────────────
+
+function buildPerformanceContext(picks: PickDetail[]): string {
+  if (picks.length < 3) {
+    return "Insufficient historical data for calibration (fewer than 3 resolved picks). Apply default rubric weights.";
+  }
+
+  const resolved = picks.filter(p => p.result !== "Push");
+  const wins = resolved.filter(p => p.result === "Win");
+  const losses = resolved.filter(p => p.result === "Loss");
+  const pushes = picks.filter(p => p.result === "Push");
+
+  const winRate = resolved.length > 0 ? wins.length / resolved.length : 0;
+  const avgImplied = resolved.length > 0
+    ? resolved.reduce((s, p) => s + p.impliedProbPct, 0) / resolved.length / 100
+    : 0;
+  const edge = Math.round((winRate - avgImplied) * 1000) / 10;
+
+  // Bucket helper: returns "NW-NL (X%)" or "no data"
+  const stat = (bucket: PickDetail[]) => {
+    if (bucket.length === 0) return "no data";
+    const w = bucket.filter(p => p.result === "Win").length;
+    const l = bucket.filter(p => p.result === "Loss").length;
+    const pct = (w + l) > 0 ? Math.round(w / (w + l) * 100) : 0;
+    return `${w}W-${l}L (${pct}%)`;
+  };
+
+  // 1. Confidence calibration
+  const highConf  = resolved.filter(p => p.confidence >= 75);
+  const medConf   = resolved.filter(p => p.confidence >= 60 && p.confidence < 75);
+  const lowConf   = resolved.filter(p => p.confidence < 60);
+  const avgPredicted = (bucket: PickDetail[]) =>
+    bucket.length > 0 ? Math.round(bucket.reduce((s, p) => s + p.confidence, 0) / bucket.length) : 0;
+
+  // 2. SP Matchup Rating accuracy
+  const spStrong  = resolved.filter(p => p.spMatchupRating === "Strong");
+  const spNeutral = resolved.filter(p => p.spMatchupRating === "Neutral");
+  const spWeak    = resolved.filter(p => p.spMatchupRating === "Weak");
+
+  // 3. Bet type performance
+  const byBetType = (type: string) => resolved.filter(p => p.betType === type);
+
+  // 4. Odds range performance
+  const heavyFav  = resolved.filter(p => p.odds <= -115);
+  const lightFav  = resolved.filter(p => p.odds > -115 && p.odds < 0);
+  const pickEm    = resolved.filter(p => p.odds >= 0 && p.odds <= 110);
+  const dogs      = resolved.filter(p => p.odds > 110);
+
+  // 5. Home vs Away lean — infer from matchup string and pick team
+  const homePicks = resolved.filter(p => {
+    const homeAbbr = (p.matchup.split(" @ ")[1] ?? "").trim().toLowerCase();
+    return homeAbbr && p.pick.toLowerCase().includes(homeAbbr);
+  });
+  const awayPicks = resolved.filter(p => {
+    const awayAbbr = (p.matchup.split(" @ ")[0] ?? "").trim().toLowerCase();
+    return awayAbbr && p.pick.toLowerCase().includes(awayAbbr);
+  });
+
+  // 6. Recent streak — last 10 resolved
+  const last10  = [...resolved].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 10);
+  const l10W    = last10.filter(p => p.result === "Win").length;
+  const streakDir = l10W >= 6 ? "HOT" : l10W <= 4 ? "COLD" : "NEUTRAL";
+
+  // 7. Recent losses with notes (last 5) for semantic pattern analysis
+  const recentLosses = [...losses]
+    .sort((a, b) => b.date.localeCompare(a.date))
+    .slice(0, 5)
+    .map(p => `  • ${p.date} ${p.matchup} | ${p.pick} | SP:${p.spMatchupRating} | Conf:${p.confidence}% | ${p.notes.slice(0, 200)}`);
+
+  // 8. Expected value estimate — are we beating the market?
+  const avgOddsROI = resolved.length > 0
+    ? resolved.reduce((sum, p) => {
+        const payout = p.odds >= 0 ? p.odds / 100 : 100 / Math.abs(p.odds);
+        return sum + (p.result === "Win" ? payout : -1);
+      }, 0)
+    : 0;
+  const roiPct = resolved.length > 0 ? Math.round(avgOddsROI / resolved.length * 100) : 0;
+
+  const lines = [
+    `**Period:** Last ${picks.length} resolved picks (${wins.length}W-${losses.length}L-${pushes.length}P)`,
+    `**Win rate:** ${Math.round(winRate * 100)}% | **Avg implied prob:** ${Math.round(avgImplied * 100)}% | **Edge vs market:** ${edge > 0 ? "+" : ""}${edge}%`,
+    `**Estimated ROI per pick:** ${roiPct > 0 ? "+" : ""}${roiPct}%`,
+    ``,
+    `**Confidence Calibration (predicted → actual):**`,
+    `- High ≥75% (avg ${avgPredicted(highConf)}% predicted): ${stat(highConf)}`,
+    `- Medium 60-74% (avg ${avgPredicted(medConf)}% predicted): ${stat(medConf)}`,
+    `- Low <60% (avg ${avgPredicted(lowConf)}% predicted): ${stat(lowConf)}`,
+    ``,
+    `**Starting Pitcher Edge (P1) Accuracy:**`,
+    `- Strong SP advantage: ${stat(spStrong)}`,
+    `- Neutral SP matchup: ${stat(spNeutral)}`,
+    `- Weak SP matchup: ${stat(spWeak)}`,
+    ``,
+    `**Bet Type Performance:**`,
+    `- Bet of Day: ${stat(byBetType("Bet of Day"))}`,
+    `- Underdog of Day: ${stat(byBetType("Underdog"))}`,
+    `- Top 3: ${stat(byBetType("Top 3"))}`,
+    `- Game Pick: ${stat(byBetType("Game Pick"))}`,
+    ``,
+    `**Odds Range Performance:**`,
+    `- Heavy favorite (≤-115): ${stat(heavyFav)}`,
+    `- Light favorite (-114 to -100): ${stat(lightFav)}`,
+    `- Pick'em (±110): ${stat(pickEm)}`,
+    `- Underdog (>+110): ${stat(dogs)}`,
+    ``,
+    `**Home vs Away Lean:**`,
+    `- Picking home team: ${stat(homePicks)}`,
+    `- Picking away team: ${stat(awayPicks)}`,
+    ``,
+    `**Recent Streak:** Last 10 resolved: ${l10W}W-${10 - l10W}L → ${streakDir}`,
+    ``,
+    `**Last 5 Losses (pattern analysis):**`,
+    recentLosses.length > 0 ? recentLosses.join("\n") : "  (none yet)",
+  ];
+
+  return lines.join("\n");
+}
+
 // ─── Analysis prompt ─────────────────────────────────────────────────────────
 
-function buildPrompt(data: FetchDataResult, yesterdayScorecard: string, runningRecord: { wins: number; losses: number; pushes: number }): string {
+function buildPrompt(data: FetchDataResult, yesterdayScorecard: string, runningRecord: { wins: number; losses: number; pushes: number }, recentPicks: PickDetail[]): string {
   const winPct = (runningRecord.wins + runningRecord.losses) > 0
     ? Math.round((runningRecord.wins / (runningRecord.wins + runningRecord.losses)) * 1000) / 10
     : 0;
 
+  const performanceContext = buildPerformanceContext(recentPicks);
+
   return `You are an MLB betting analyst. Analyze each game below using the full 10-Pillar Protocol and return ONLY a valid JSON array of pick objects — no markdown, no commentary, no code fences.
 
 ## ABSOLUTE RULES
-1. NEVER recommend a bet at odds worse than -115. Odds of -116 or longer are INELIGIBLE. If the best available bet for a game exceeds -115, set noEligibleBet: true.
+1. NEVER recommend a bet at odds worse than -120. Odds of -121 or longer are INELIGIBLE. If the best available bet for a game exceeds -120, set noEligibleBet: true.
 2. Run the full 10-pillar analysis for EVERY game. No shortcuts.
 3. Case AGAINST MUST cite at least 2 specific data points (actual stats/numbers). Generic statements like "the other team could play well" are REJECTED — be specific.
 4. Case FOR must also cite at least 2 specific data points.
@@ -91,7 +212,7 @@ P2 Lineup Handedness Splits (weight 3): Apply SP's vs-LHB and vs-RHB ERA/OPS spl
 P3 Bullpen Quality (weight 2): Compare bullpen ERAs, series game number, closer reliability.
 P4 Home/Away Record & Park Context (weight 1): Home win%, away win%, park factor (>102 = hitter-friendly, <97 = pitcher-friendly).
 P5 Recent Form (weight 2): Last 10 record, streak, run differential.
-P6 Environmental Factors (weight 1): Temp, wind effect, altitude. Dome = NEUTRAL. Coors Field always note altitude (+1.5-2 runs).
+P6 Environmental Factors (weight 1): Temp, wind effect, altitude. Dome = NEUTRAL. Coors Field always note altitude (+1.5-2 runs). **For every game, note the total line and evaluate whether Over or Under is a meaningful bet** — especially for Coors, high wind, or two elite SPs in a dome.
 P7 Travel & Fatigue (weight 1): Day game after night game, series game 3+, cross-country travel.
 P8 Line Movement / Sharp Money (weight 2): Extract from line movement search data. If no data: NEUTRAL.
 P9 Game Importance (weight 1): Playoff race (within 2 games of first = high motivation), rubber game, rivalry.
@@ -168,6 +289,34 @@ Return an array where each element is:
 
 ---
 
+## SELF-LEARNING CALIBRATION
+
+The following is a statistical breakdown of your recent pick performance. Before scoring today's games, you MUST derive concrete calibration lessons from this data and apply them as explicit entries in each pick's \`adjustments\` array.
+
+${performanceContext}
+
+**Required calibration steps — complete all 8 before scoring any game:**
+
+1. **Confidence accuracy:** Compare predicted vs actual win rate per bucket. If high-confidence picks (≥75%) are hitting below their predicted rate, apply a \`{"reason": "Calibration: high-conf overfit — reducing base", "delta": -N}\` adjustment (N = 3–8) to picks you rate ≥75% today. If they're outperforming, a +2–3 uplift is acceptable.
+
+2. **SP Matchup (P1) reliability:** If "Strong" SP picks are losing more than 50% of the time, reduce their effective P1 weight — apply a \`{"reason": "Calibration: Strong SP edge not converting", "delta": -5}\` to any game you'd otherwise rate as Strong SP advantage. If "Weak" SP picks are surprisingly winning, be skeptical of over-weighting P1 today.
+
+3. **Odds range edge:** If a specific range (e.g. heavy favorites ≤-115) has a negative win rate vs implied probability, apply \`{"reason": "Calibration: heavy fav underperformance", "delta": -4}\` to any pick in that range today. If underdogs have been outperforming, consider giving them a +3 boost.
+
+4. **Home/away bias check:** If one lean (home or away) is systematically underperforming, apply a \`-3\` adjustment to any pick that falls in that category today.
+
+5. **Bet type calibration:** If "Bet of Day" picks are losing at a higher rate than "Game Pick" level picks, this signals overconfidence in featuring — reduce BOTD confidence threshold from 80% to 75% for today.
+
+6. **Recent streak adjustment:** If the last 10 picks are COLD (≤4W), apply a universal caution flag — reduce all confidence scores by 3 points and raise the BOTD threshold by 5 points. If HOT (≥7W), no change needed.
+
+7. **Loss pattern recognition:** Review the last 5 losses above. Identify any recurring themes (e.g., "road teams in cold weather," "pitchers with small IP samples," "line moved against us"). For any game today that matches a loss pattern, apply \`{"reason": "Calibration: matches recent loss pattern — [describe it]", "delta": -5}\`.
+
+8. **ROI signal:** If estimated ROI is negative, you are systematically losing value — tighten eligibility criteria for today. Raise the minimum confidence for Top 3 from 60% to 65%, and for BOTD from 80% to 83%.
+
+Apply calibration adjustments inside each pick's \`adjustments\` array. Label each one clearly with "Calibration:" prefix so the audit trail is legible.
+
+---
+
 ## CONTEXT
 
 30-day running record: ${runningRecord.wins}-${runningRecord.losses}-${runningRecord.pushes} (${winPct}% win rate)
@@ -184,7 +333,7 @@ ${JSON.stringify({ date: data.date, games: data.games }, null, 1)}
 
 ## WEB SEARCH RESULTS
 
-### ODDS (use to find lines for each game — only -115 or better are eligible)
+### ODDS (use to find lines for each game — only -120 or better are eligible; always extract total line + over/under odds for every game)
 ${data.tavilyResults.odds || "No odds data available"}
 
 ### LINEUPS (check if each game's lineups are confirmed or TBD)
@@ -204,16 +353,23 @@ Return ONLY the JSON array. No markdown, no explanation.`;
 // ─── Parse Claude's JSON response ────────────────────────────────────────────
 
 function parsePicksJSON(raw: string): GamePickResult[] {
-  const cleaned = raw
-    .replace(/^```json\s*/m, "").replace(/^```\s*/m, "").replace(/```\s*$/m, "")
-    .trim();
+  // Extract just the JSON array — handles leading prose, code fences, and trailing text
+  const start = raw.indexOf("[");
+  const end = raw.lastIndexOf("]");
+
+  if (start === -1 || end === -1 || end < start) {
+    console.error("No JSON array found in Claude response. First 500 chars:", raw.slice(0, 500));
+    throw new Error("Analysis JSON parse failed: no array brackets found in response");
+  }
+
+  const extracted = raw.slice(start, end + 1);
 
   try {
-    const parsed = JSON.parse(cleaned) as GamePickResult[];
+    const parsed = JSON.parse(extracted) as GamePickResult[];
     if (!Array.isArray(parsed)) throw new Error("Response is not an array");
     return parsed;
   } catch (err) {
-    console.error("Failed to parse Claude JSON. First 500 chars:", cleaned.slice(0, 500));
+    console.error("Failed to parse Claude JSON. First 500 chars:", extracted.slice(0, 500));
     throw new Error(`Analysis JSON parse failed: ${(err as Error).message}`);
   }
 }
@@ -292,7 +448,7 @@ function buildReportMarkdown(
     const gameTime = new Date(p.venue).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZoneName: "short" });
     lines.push(`### ${p.matchup}`);
     if (p.noEligibleBet) {
-      lines.push(`**No eligible bet** — ${p.noEligibleBetReason ?? "all lines exceed -115 threshold."}`);
+      lines.push(`**No eligible bet** — ${p.noEligibleBetReason ?? "all lines exceed -120 threshold."}`);
     } else {
       lines.push(`**Pick:** ${p.pickDescription} | Confidence: ${p.finalConfidence}%`);
       lines.push(`**For:** ${p.notes}`);
@@ -320,27 +476,36 @@ export const mlbAnalyzeTask = task({
   retry: { maxAttempts: 2, minTimeoutInMs: 10000, maxTimeoutInMs: 60000, factor: 2 },
 
   run: async (payload: AnalyzePayload): Promise<AnalyzeResult> => {
-    const { fetchResult, runningRecord, yesterdayScorecard } = payload;
+    const { fetchResult, runningRecord, yesterdayScorecard, recentPicks } = payload;
 
     if (fetchResult.games.length === 0) {
       throw new Error("No games to analyze — fetch returned empty schedule");
     }
 
     console.log(`[mlb-analyze] Analyzing ${fetchResult.games.length} games for ${fetchResult.date}`);
+    console.log(`[mlb-analyze] ${recentPicks.length} recent picks loaded for calibration`);
 
     // Call Claude
     const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-    const prompt = buildPrompt(fetchResult, yesterdayScorecard, runningRecord);
+    const prompt = buildPrompt(fetchResult, yesterdayScorecard, runningRecord, recentPicks);
 
     console.log(`[mlb-analyze] Sending ${prompt.length} chars to Claude...`);
 
-    const message = await client.messages.create({
+    // Use streaming to avoid the 10-minute non-streaming API timeout
+    console.log(`[mlb-analyze] Streaming response from Claude...`);
+    let responseText = "";
+    const stream = client.messages.stream({
       model: "claude-sonnet-4-6",
-      max_tokens: 16000,
+      max_tokens: 32000,
       messages: [{ role: "user", content: prompt }],
     });
 
-    const responseText = (message.content[0] as { type: "text"; text: string }).text;
+    for await (const chunk of stream) {
+      if (chunk.type === "content_block_delta" && chunk.delta.type === "text_delta") {
+        responseText += chunk.delta.text;
+      }
+    }
+
     console.log(`[mlb-analyze] Claude responded with ${responseText.length} chars`);
 
     const picks = parsePicksJSON(responseText);

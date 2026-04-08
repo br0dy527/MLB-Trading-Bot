@@ -53,7 +53,7 @@ export async function fetchBatchedWebData(date: string): Promise<TavilyResults> 
 
   // Run searches sequentially to avoid rate limit issues
   const odds = await tavilySearch(
-    `MLB moneyline run line over under odds all games today ${dateStr} betting lines`
+    `MLB odds moneyline run line over under totals all games ${dateStr} site:oddsshark.com OR site:sportsbookreview.com OR site:bettingpros.com betting lines`
   );
   console.log("  ✓ Odds search complete");
 

@@ -13,7 +13,7 @@ Usage:
     python tools/fetch_odds.py "NYY" "BOS" 2026-04-03
     python tools/fetch_odds.py --queries-only  (prints search queries for all games)
 
-The -115 eligibility gate lives in american_to_implied_prob() and is_eligible().
+The -120 eligibility gate lives in american_to_implied_prob() and is_eligible().
 """
 
 import sys
@@ -46,11 +46,11 @@ def implied_prob_to_american(prob: float) -> int:
 
 def is_eligible(american_odds: int) -> bool:
     """
-    Returns True if the bet qualifies under the -115 rule.
-    Eligible: -115, -114, ..., -100, +100, +110, +150, etc.
-    Ineligible: -116, -120, -150, -200, etc.
+    Returns True if the bet qualifies under the -120 rule.
+    Eligible: -120, -119, ..., -100, +100, +110, +150, etc.
+    Ineligible: -121, -130, -150, -200, etc.
     """
-    if american_odds >= -115:
+    if american_odds >= -120:
         return True
     return False
 

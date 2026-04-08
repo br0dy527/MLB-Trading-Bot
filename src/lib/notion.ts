@@ -8,10 +8,23 @@ function getClient(): Client {
   return new Client({ auth: token });
 }
 
+// v5 SDK: dataSources.query() requires the collection/data source ID, not the database page ID
+function picksDsId(): string {
+  const id = process.env.NOTION_PICKS_DS_ID;
+  if (!id) throw new Error("NOTION_PICKS_DS_ID is not set");
+  return id;
+}
+
+function reportsDsId(): string {
+  const id = process.env.NOTION_REPORTS_DS_ID;
+  if (!id) throw new Error("NOTION_REPORTS_DS_ID is not set");
+  return id;
+}
+
+// Still needed for pages.create (parent database_id uses the DB page ID)
 function picksDbId(): string {
   const id = process.env.NOTION_PICKS_DB_ID;
   if (!id) throw new Error("NOTION_PICKS_DB_ID is not set");
-  // Normalize to hyphenated UUID format required by v5 SDK
   return id.replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, "$1-$2-$3-$4-$5");
 }
 
@@ -22,6 +35,21 @@ function reportsDbId(): string {
 }
 
 // ─── Types ───────────────────────────────────────────────────────────────────
+
+export interface PickDetail {
+  date: string;
+  matchup: string;
+  pick: string;
+  betType: string;
+  odds: number;
+  impliedProbPct: number;
+  confidence: number;
+  spMatchupRating: string;
+  result: "Win" | "Loss" | "Push";
+  homeTeam: string;
+  awayTeam: string;
+  notes: string;
+}
 
 export interface PendingPick {
   pageId: string;
@@ -75,7 +103,7 @@ export async function getYesterdayPendingPicks(yesterday: string): Promise<Pendi
   let cursor: string | undefined;
   do {
     const res = await notion.dataSources.query({
-      data_source_id: picksDbId(),
+      data_source_id: picksDsId(),
       start_cursor: cursor,
       filter: {
         and: [
@@ -126,7 +154,7 @@ export async function getRunningRecord(days = 30): Promise<RunningRecord> {
 
   do {
     const res = await notion.dataSources.query({
-      data_source_id: picksDbId(),
+      data_source_id: picksDsId(),
       start_cursor: cursor,
       filter: {
         and: [
@@ -155,6 +183,64 @@ export async function getRunningRecord(days = 30): Promise<RunningRecord> {
   return { wins, losses, pushes };
 }
 
+// ─── Fetch recent resolved picks for self-learning loop ──────────────────────
+
+export async function getRecentPicksDetail(days = 21): Promise<PickDetail[]> {
+  const notion = getClient();
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - days);
+  const cutoffStr = cutoff.toISOString().split("T")[0] as string;
+
+  const picks: PickDetail[] = [];
+  let cursor: string | undefined;
+
+  do {
+    const res = await notion.dataSources.query({
+      data_source_id: picksDsId(),
+      start_cursor: cursor,
+      filter: {
+        and: [
+          { property: "Date", date: { on_or_after: cutoffStr } },
+          {
+            or: [
+              { property: "Result", select: { equals: "Win" } },
+              { property: "Result", select: { equals: "Loss" } },
+              { property: "Result", select: { equals: "Push" } },
+            ],
+          },
+        ],
+      },
+      sorts: [{ property: "Date", direction: "descending" }],
+    } as any);
+
+    for (const page of res.results) {
+      if (page.object !== "page") continue;
+      const props = (page as any).properties;
+      const result = props["Result"]?.select?.name;
+      if (!["Win", "Loss", "Push"].includes(result)) continue;
+
+      picks.push({
+        date: props["Date"]?.date?.start ?? "",
+        matchup: props["Matchup"]?.title?.[0]?.plain_text ?? "",
+        pick: props["Pick"]?.rich_text?.[0]?.plain_text ?? "",
+        betType: props["Bet Type"]?.select?.name ?? "",
+        odds: props["Odds"]?.number ?? 0,
+        impliedProbPct: props["Implied Prob %"]?.number ?? 0,
+        confidence: props["Confidence"]?.number ?? 0,
+        spMatchupRating: props["SP Matchup Rating"]?.select?.name ?? "",
+        result: result as "Win" | "Loss" | "Push",
+        homeTeam: props["Home Team"]?.rich_text?.[0]?.plain_text ?? "",
+        awayTeam: props["Away Team"]?.rich_text?.[0]?.plain_text ?? "",
+        notes: props["Notes"]?.rich_text?.[0]?.plain_text ?? "",
+      });
+    }
+
+    cursor = res.has_more ? (res.next_cursor ?? undefined) : undefined;
+  } while (cursor);
+
+  return picks;
+}
+
 // ─── Update yesterday's Daily Report page with resolved results ──────────────
 
 export async function updateDailyReportResults(
@@ -166,7 +252,7 @@ export async function updateDailyReportResults(
   const notion = getClient();
 
   const res = await notion.dataSources.query({
-    data_source_id: reportsDbId(),
+    data_source_id: reportsDsId(),
     filter: { property: "Date", title: { contains: date } },
     page_size: 1,
   } as any);
@@ -195,6 +281,19 @@ export async function createDailyReport(data: DailyReportData): Promise<string> 
   const formattedDate = dateObj.toLocaleDateString("en-US", {
     weekday: "long", month: "long", day: "2-digit", year: "numeric",
   });
+
+  // Idempotency: if a report already exists for this date, return its URL instead of creating a duplicate
+  const existing = await notion.dataSources.query({
+    data_source_id: reportsDsId(),
+    filter: { property: "Date", title: { contains: data.date } },
+    page_size: 1,
+  } as any);
+
+  if (existing.results.length > 0) {
+    const existingPage = existing.results[0] as any;
+    console.log(`[createDailyReport] Report already exists for ${data.date} — skipping duplicate creation`);
+    return existingPage.url ?? `https://notion.so/${existingPage.id.replace(/-/g, "")}`;
+  }
 
   const page = await notion.pages.create({
     parent: { type: "database_id", database_id: reportsDbId() },

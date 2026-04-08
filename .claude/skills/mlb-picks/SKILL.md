@@ -7,7 +7,7 @@ argument-hint: "YYYY-MM-DD (optional, defaults to today)"
 
 # MLB Daily Picks Workflow
 
-You are an MLB betting research agent. Your job is to analyze every game today using hard statistical evidence, argue for and against each bet, and identify the highest-value bets within the -115 odds rule. This is serious research — treat every pick like your livelihood depends on it, because the system is designed to prove its edge over time.
+You are an MLB betting research agent. Your job is to analyze every game today using hard statistical evidence, argue for and against each bet, and identify the highest-value bets within the -120 odds rule. This is serious research — treat every pick like your livelihood depends on it, because the system is designed to prove its edge over time.
 
 **Date:** Use `$ARGUMENTS` if provided (format: YYYY-MM-DD). Otherwise use today's date.
 
@@ -73,12 +73,12 @@ If the file already exists and is less than 2 hours old, skip re-running compile
 
 For each game in the JSON, run the provided `odds_search_queries.moneyline_query` via WebSearch.
 
-Extract from search results:
+Extract from search results for **every game** — all of the following are required:
 - Home ML and Away ML (American odds)
 - Run line odds (Home -1.5, Away +1.5)
-- Total (O/U line) and over/under odds
+- **Total (O/U line) and over/under odds** — always note the total and both over/under prices
 
-Then mentally apply `fetch_odds.py` logic: tag each bet as eligible (-115 or better) or ineligible.
+Then mentally apply `fetch_odds.py` logic: tag each bet as eligible (-120 or better) or ineligible.
 
 Also search: "[Away Team] vs [Home Team] odds movement" to detect if line has moved since opening.
 
@@ -109,7 +109,7 @@ For each game with at least one eligible bet:
 6. **Apply auto-caps** if conditions met
 7. **Select the best eligible bet type** for this game (ML, RL, total)
 
-For games with NO eligible bets (all lines worse than -115): Note "No eligible bet" and move on.
+For games with NO eligible bets (all lines worse than -120): Note "No eligible bet" and move on.
 
 ---
 
@@ -204,7 +204,7 @@ Note: The Gmail MCP supports draft creation only — after creating the draft, n
 
 ## Hard Rules (Never Violate)
 
-1. **Never recommend a bet at worse than -115 odds.** -116 and beyond are ineligible, period.
+1. **Never recommend a bet at worse than -120 odds.** -121 and beyond are ineligible, period.
 2. **Run the full 10-pillar analysis for every game.** No skipping, even for "obvious" games.
 3. **Case AGAINST must cite 2+ specific data points.** Token counterarguments are rejected.
 4. **Confidence scores use the rubric.** Do not estimate intuitively.
@@ -218,6 +218,6 @@ Note: The Gmail MCP supports draft creation only — after creating the draft, n
 
 - **No games today:** Output "No MLB games scheduled for [date]." Do not create a Notion page.
 - **Fewer than 3 eligible bets:** Report Top 1-2 as available, note shortfall.
-- **All games have heavy favorites (no -115 or better options):** Report "No eligible bets — all games feature heavy favorites today. Consider waiting."
+- **All games have heavy favorites (no -120 or better options):** Report "No eligible bets — all games feature heavy favorites today. Consider waiting."
 - **compile_game_data.py fails entirely:** Attempt to re-run once. If fails again, proceed with manual web research for schedule data, note data limitations prominently.
 - **Notion MCP tools fail:** Note the failure in output. Do not loop infinitely on retries.

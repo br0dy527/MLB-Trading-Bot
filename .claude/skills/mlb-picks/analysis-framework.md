@@ -213,10 +213,10 @@ These conditions automatically cap confidence regardless of pillar scores:
 
 For each game, evaluate which eligible bet type has the strongest edge:
 
-- **Moneyline (ML)**: Best when you have strong conviction on overall outcome. Eligible at -115 or better.
+- **Moneyline (ML)**: Best when you have strong conviction on overall outcome. Eligible at -120 or better.
 - **Run Line -1.5**: Better value than heavy ML favorites. Use when dominant team + weak bullpen on other side. Usually +110 to +140 for favorites.
 - **Run Line +1.5**: For underdogs — covers even if they lose by 1. Strong value in pitcher's duels.
-- **Over/Under**: Use when weather/park factor is the primary edge. Wind blowing out + Coors = heavy over lean.
+- **Over/Under**: Evaluate for EVERY game. Use when weather/park factor creates a clear edge. Wind blowing out + Coors = heavy over lean. Strong pitching matchup both sides + dome = under candidate. Always note the total line and over/under odds in your analysis.
 - **First 5 Innings (F5)**: Isolates starting pitchers, removes bullpen variance. Not always available — check if odds provided.
 
-**The -115 rule is absolute.** If the only viable bet for a game is -120 or worse, log "No eligible bet" for that game.
+**The -120 rule is absolute.** If the only viable bet for a game is -121 or worse, log "No eligible bet" for that game.

@@ -8,14 +8,15 @@ import { mlbFetchDataTask } from "./mlb-fetch-data.js";
 import { mlbAnalyzeTask } from "./mlb-analyze.js";
 import {
   getYesterdayPendingPicks, updatePickResult, getRunningRecord,
-  updateDailyReportResults,
+  getRecentPicksDetail, updateDailyReportResults,
+  type PickDetail,
 } from "../lib/notion.js";
 import { fetchFinalScores } from "../lib/mlb-api.js";
 
 export const mlbOrchestratorTask = schedules.task({
   id: "mlb-orchestrator",
   cron: {
-    pattern: "30 16 * * *", // 12:30 PM ET (UTC-4 during DST, UTC-5 in winter — use 16:30 UTC for DST)
+    pattern: "15 12 * * *", // 12:15 PM ET — timezone field handles DST automatically
     timezone: "America/New_York",
     environments: ["PRODUCTION"],
   },
@@ -93,17 +94,22 @@ export const mlbOrchestratorTask = schedules.task({
       yesterdayScorecardText = `Scoring unavailable: ${String(err)}`;
     }
 
-    // ── STEP 2: Load running record ──────────────────────────────────────────
-    console.log("\n[Step 2] Loading 30-day running record...");
+    // ── STEP 2: Load running record + recent pick detail for self-learning ──────
+    console.log("\n[Step 2] Loading performance data...");
     let runningRecord = { wins: 0, losses: 0, pushes: 0 };
+    let recentPicks: PickDetail[] = [];
     try {
-      runningRecord = await getRunningRecord(30);
+      [runningRecord, recentPicks] = await Promise.all([
+        getRunningRecord(30),
+        getRecentPicksDetail(21),
+      ]);
       const wr = (runningRecord.wins + runningRecord.losses) > 0
         ? Math.round(runningRecord.wins / (runningRecord.wins + runningRecord.losses) * 1000) / 10
         : 0;
       console.log(`  30-day record: ${runningRecord.wins}-${runningRecord.losses}-${runningRecord.pushes} (${wr}%)`);
+      console.log(`  ${recentPicks.length} resolved picks loaded for calibration`);
     } catch (err) {
-      console.warn(`  Could not load running record: ${err}`);
+      console.warn(`  Could not load performance data: ${err}`);
     }
 
     // ── STEP 3: Fetch today's game data ──────────────────────────────────────
@@ -135,6 +141,7 @@ export const mlbOrchestratorTask = schedules.task({
         fetchResult: fetchResult.output,
         runningRecord,
         yesterdayScorecard: yesterdayScorecardText,
+        recentPicks,
       },
       { idempotencyKey: `mlb-analyze-${today}` }
     );
