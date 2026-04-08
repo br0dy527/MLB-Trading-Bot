@@ -7,7 +7,7 @@ import { schedules } from "@trigger.dev/sdk/v3";
 import { mlbFetchDataTask } from "./mlb-fetch-data.js";
 import { mlbAnalyzeTask } from "./mlb-analyze.js";
 import {
-  getYesterdayPendingPicks, updatePickResult, getRunningRecord,
+  getAllPendingPicks, updatePickResult, getRunningRecord, getAllTimeRecord,
   getRecentPicksDetail, updateDailyReportResults,
   type PickDetail,
 } from "../lib/notion.js";
@@ -29,65 +29,94 @@ export const mlbOrchestratorTask = schedules.task({
     console.log(`\nMLB Daily Picks — ${today}`);
     console.log("=".repeat(40));
 
-    // ── STEP 1: Score yesterday's picks ─────────────────────────────────────
-    console.log("\n[Step 1] Scoring yesterday's picks...");
-    let yesterdayScorecardText = "No pending picks from yesterday.";
+    // ── STEP 1: Resolve ALL pending picks (any date) + build scoreboard ─────
+    console.log("\n[Step 1] Resolving all pending picks...");
+    let yesterdayScorecardText = "No picks yesterday — off day.";
+
+    // Resolved pick shape for scoreboard building
+    interface ResolvedPick { date: string; pick: string; betType: string; result: "Win" | "Loss" | "Push" }
+    const allResolved: ResolvedPick[] = [];
 
     try {
-      const pendingPicks = await getYesterdayPendingPicks(yesterdayDate);
-      console.log(`  Found ${pendingPicks.length} pending picks for ${yesterdayDate}`);
+      const pendingPicks = await getAllPendingPicks();
+      console.log(`  Found ${pendingPicks.length} pending picks across all dates`);
 
       if (pendingPicks.length > 0) {
-        const finalScores = await fetchFinalScores(yesterdayDate);
-        const scoreMap = new Map(finalScores.map(s => [s.gameId, s]));
+        // Group by date so we only fetch each day's scores once
+        const dateSet = new Set(pendingPicks.map(p => p.date).filter(Boolean));
+        const scoresByDate = new Map<string, Map<number, { homeScore: number; awayScore: number }>>();
 
-        let wins = 0, losses = 0, pushes = 0;
-        const resultLines: string[] = [];
+        for (const d of dateSet) {
+          if (!d) continue;
+          const scores = await fetchFinalScores(d);
+          scoresByDate.set(d, new Map(scores.map(s => [s.gameId, s])));
+        }
 
         for (const pick of pendingPicks) {
-          const score = scoreMap.get(pick.gameId);
+          const scoreMap = scoresByDate.get(pick.date);
+          const score = scoreMap?.get(pick.gameId);
           if (!score) {
-            console.warn(`  No final score found for game ${pick.gameId} (${pick.matchup})`);
-            resultLines.push(`| ${pick.matchup} | ${pick.pick} | No Score Found |`);
+            console.warn(`  No final score for game ${pick.gameId} (${pick.matchup} on ${pick.date})`);
             continue;
           }
 
           const result = resolvePick(pick.pick, pick.odds, score.homeScore, score.awayScore, pick.matchup);
           await updatePickResult(pick.pageId, result);
-
-          if (result === "Win") wins++;
-          else if (result === "Loss") losses++;
-          else pushes++;
-
-          resultLines.push(`| ${pick.matchup} | ${pick.pick} | ${result} |`);
+          allResolved.push({ date: pick.date, pick: pick.pick, betType: pick.betType, result });
+          console.log(`  [${pick.date}] ${pick.matchup} — ${pick.pick} → ${result}`);
         }
 
-        // Update yesterday's Daily Report
-        const botdPick = pendingPicks.find(p => p.betType === "Bet of Day");
-        const uotdPick = pendingPicks.find(p => p.betType === "Underdog");
-        const top3Picks = pendingPicks.filter(p => p.betType === "Top 3");
-        const top3W = top3Picks.filter(p => p.betType === "Top 3").length; // re-query would be needed for accuracy; approximate here
+        // Scoreboard uses only yesterday's resolved picks
+        const ydResolved = allResolved.filter(r => r.date === yesterdayDate);
 
-        try {
-          await updateDailyReportResults(
-            yesterdayDate,
-            botdPick ? "Pending" : "N/A", // will be updated after full resolution
-            uotdPick ? "Pending" : "N/A",
-            `${wins}-${losses}-${pushes}`
-          );
-        } catch (err) {
-          console.warn(`  Could not update yesterday's report page: ${err}`);
+        const botd = ydResolved.find(r => r.betType === "Bet of Day");
+        const uotd = ydResolved.find(r => r.betType === "Underdog");
+        const top3 = ydResolved.filter(r => r.betType === "Top 3");
+        const top3W = top3.filter(r => r.result === "Win").length;
+        const top3L = top3.filter(r => r.result === "Loss").length;
+        const top3P = top3.filter(r => r.result === "Push").length;
+        const top3WinPct = (top3W + top3L) > 0
+          ? Math.round(top3W / (top3W + top3L) * 1000) / 10 : 0;
+
+        // Update yesterday's Daily Report properties
+        if (ydResolved.length > 0) {
+          const ydW = ydResolved.filter(r => r.result === "Win").length;
+          const ydL = ydResolved.filter(r => r.result === "Loss").length;
+          const ydP = ydResolved.filter(r => r.result === "Push").length;
+          try {
+            await updateDailyReportResults(
+              yesterdayDate,
+              botd?.result ?? "N/A",
+              uotd?.result ?? "N/A",
+              `${top3W}-${top3L}-${top3P}`
+            );
+          } catch (err) {
+            console.warn(`  Could not update yesterday's report page: ${err}`);
+          }
+
+          // Fetch running records AFTER resolution so counts are current
+          const [runningRecord30, allTime] = await Promise.all([
+            getRunningRecord(30),
+            getAllTimeRecord(),
+          ]);
+          const rrWinPct = (runningRecord30.wins + runningRecord30.losses) > 0
+            ? Math.round(runningRecord30.wins / (runningRecord30.wins + runningRecord30.losses) * 1000) / 10 : 0;
+          const atWinPct = (allTime.wins + allTime.losses) > 0
+            ? Math.round(allTime.wins / (allTime.wins + allTime.losses) * 1000) / 10 : 0;
+          const sign = (n: number) => n >= 0 ? `+${n}` : `${n}`;
+
+          yesterdayScorecardText = [
+            `| Category | Pick | Result |`,
+            `|---|---|---|`,
+            `| Bet of the Day | ${botd?.pick ?? "—"} | ${botd?.result ?? "No pick"} |`,
+            `| Underdog of Day | ${uotd?.pick ?? "—"} | ${uotd?.result ?? "No pick"} |`,
+            `| Top 3 | — | ${top3W}-${top3L}-${top3P} (${top3WinPct}%) |`,
+            `| 30-Day Running | — | ${runningRecord30.wins}-${runningRecord30.losses} (${rrWinPct}%) · ROI: ${sign(runningRecord30.roiUnits)} units |`,
+            `| **Overall (Season)** | — | **${allTime.wins}-${allTime.losses}-${allTime.pushes} (${atWinPct}%) · ${sign(allTime.roiUnits)} units** |`,
+          ].join("\n");
+
+          console.log(`  Yesterday: ${ydW}W-${ydL}L-${ydP}P | 30-day: ${runningRecord30.wins}-${runningRecord30.losses} | All-time: ${allTime.wins}-${allTime.losses}`);
         }
-
-        const winPct = (wins + losses) > 0 ? Math.round(wins / (wins + losses) * 1000) / 10 : 0;
-        yesterdayScorecardText = [
-          `| Category | Record |`,
-          `|---|---|`,
-          ...resultLines,
-          `| **Overall** | **${wins}-${losses}-${pushes} (${winPct}%)** |`,
-        ].join("\n");
-
-        console.log(`  Yesterday: ${wins}W-${losses}L-${pushes}P (${winPct}%)`);
       }
     } catch (err) {
       console.error(`  Scoring step failed: ${err}`);
@@ -96,7 +125,7 @@ export const mlbOrchestratorTask = schedules.task({
 
     // ── STEP 2: Load running record + recent pick detail for self-learning ──────
     console.log("\n[Step 2] Loading performance data...");
-    let runningRecord = { wins: 0, losses: 0, pushes: 0 };
+    let runningRecord = { wins: 0, losses: 0, pushes: 0, roiUnits: 0 };
     let recentPicks: PickDetail[] = [];
     try {
       [runningRecord, recentPicks] = await Promise.all([

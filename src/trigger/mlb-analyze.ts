@@ -55,8 +55,8 @@ interface GamePickResult {
 
 export interface AnalyzePayload {
   fetchResult: FetchDataResult;
-  runningRecord: { wins: number; losses: number; pushes: number };
-  yesterdayScorecard: string; // pre-formatted markdown summary
+  runningRecord: { wins: number; losses: number; pushes: number; roiUnits: number };
+  yesterdayScorecard: string; // pre-formatted markdown table — Category | Pick | Result
   recentPicks: PickDetail[];   // last 21 days of resolved picks for self-learning
 }
 
@@ -188,7 +188,7 @@ function buildPerformanceContext(picks: PickDetail[]): string {
 
 // ─── Analysis prompt ─────────────────────────────────────────────────────────
 
-function buildPrompt(data: FetchDataResult, yesterdayScorecard: string, runningRecord: { wins: number; losses: number; pushes: number }, recentPicks: PickDetail[]): string {
+function buildPrompt(data: FetchDataResult, yesterdayScorecard: string, runningRecord: { wins: number; losses: number; pushes: number; roiUnits: number }, recentPicks: PickDetail[]): string {
   const winPct = (runningRecord.wins + runningRecord.losses) > 0
     ? Math.round((runningRecord.wins / (runningRecord.wins + runningRecord.losses)) * 1000) / 10
     : 0;
@@ -382,19 +382,13 @@ function buildReportMarkdown(
   underdog: GamePickResult | null,
   top3: GamePickResult[],
   yesterdayScorecard: string,
-  runningRecord: { wins: number; losses: number; pushes: number }
+  runningRecord: { wins: number; losses: number; pushes: number; roiUnits: number }
 ): string {
-  const winPct = (runningRecord.wins + runningRecord.losses) > 0
-    ? Math.round((runningRecord.wins / (runningRecord.wins + runningRecord.losses)) * 1000) / 10
-    : 0;
-
   const lines: string[] = [];
 
-  // Yesterday's scorecard
+  // Yesterday's scorecard — already a fully formatted table (Category | Pick | Result)
   lines.push("## Yesterday's Scorecard");
   lines.push(yesterdayScorecard);
-  lines.push("");
-  lines.push(`**30-day running:** ${runningRecord.wins}-${runningRecord.losses}-${runningRecord.pushes} (${winPct}% win rate)`);
   lines.push("");
   lines.push("---");
 

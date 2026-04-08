@@ -92,33 +92,37 @@ export interface RunningRecord {
   wins: number;
   losses: number;
   pushes: number;
+  roiUnits: number;
 }
 
-// ─── Yesterday scoring ───────────────────────────────────────────────────────
+// ─── Pending pick resolution ──────────────────────────────────────────────────
 
-export async function getYesterdayPendingPicks(yesterday: string): Promise<PendingPick[]> {
+export interface PendingPickWithDate extends PendingPick {
+  date: string;
+}
+
+async function queryPendingPicks(extraFilter?: object): Promise<PendingPickWithDate[]> {
   const notion = getClient();
-  const picks: PendingPick[] = [];
+  const picks: PendingPickWithDate[] = [];
+  const pendingFilter = { property: "Result", select: { equals: "Pending" } };
+  const filter = extraFilter
+    ? { and: [extraFilter, pendingFilter] }
+    : pendingFilter;
 
   let cursor: string | undefined;
   do {
     const res = await notion.dataSources.query({
       data_source_id: picksDsId(),
       start_cursor: cursor,
-      filter: {
-        and: [
-          { property: "Date", date: { equals: yesterday } },
-          { property: "Result", select: { equals: "Pending" } },
-        ],
-      },
+      filter,
     } as any);
 
     for (const page of res.results) {
       if (page.object !== "page") continue;
       const props = (page as any).properties;
-
       picks.push({
         pageId: page.id,
+        date: props["Date"]?.date?.start ?? "",
         matchup: props["Matchup"]?.title?.[0]?.plain_text ?? "",
         pick: props["Pick"]?.rich_text?.[0]?.plain_text ?? "",
         betType: props["Bet Type"]?.select?.name ?? "",
@@ -133,6 +137,16 @@ export async function getYesterdayPendingPicks(yesterday: string): Promise<Pendi
   return picks;
 }
 
+/** All pending picks regardless of date — sweeps the full backlog. */
+export async function getAllPendingPicks(): Promise<PendingPickWithDate[]> {
+  return queryPendingPicks();
+}
+
+/** @deprecated Use getAllPendingPicks() to sweep the full backlog. */
+export async function getYesterdayPendingPicks(yesterday: string): Promise<PendingPickWithDate[]> {
+  return queryPendingPicks({ property: "Date", date: { equals: yesterday } });
+}
+
 export async function updatePickResult(pageId: string, result: "Win" | "Loss" | "Push"): Promise<void> {
   const notion = getClient();
   await notion.pages.update({
@@ -143,34 +157,46 @@ export async function updatePickResult(pageId: string, result: "Win" | "Loss" | 
   });
 }
 
-export async function getRunningRecord(days = 30): Promise<RunningRecord> {
+function calcRoi(pages: any[]): number {
+  let roi = 0;
+  for (const page of pages) {
+    const result = page.properties?.["Result"]?.select?.name;
+    const odds: number = page.properties?.["Odds"]?.number ?? 0;
+    if (result === "Win" && odds !== 0) {
+      roi += odds > 0 ? odds / 100 : 100 / Math.abs(odds);
+    } else if (result === "Loss") {
+      roi -= 1;
+    }
+  }
+  return Math.round(roi * 100) / 100;
+}
+
+async function queryResolvedRecord(sinceDate?: string): Promise<RunningRecord> {
   const notion = getClient();
-  const cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() - days);
-  const cutoffStr = cutoff.toISOString().split("T")[0];
+  const resolvedFilter = {
+    or: [
+      { property: "Result", select: { equals: "Win" } },
+      { property: "Result", select: { equals: "Loss" } },
+      { property: "Result", select: { equals: "Push" } },
+    ],
+  };
+  const filter = sinceDate
+    ? { and: [{ property: "Date", date: { on_or_after: sinceDate } }, resolvedFilter] }
+    : resolvedFilter;
 
   let wins = 0, losses = 0, pushes = 0;
+  const allPages: any[] = [];
   let cursor: string | undefined;
 
   do {
     const res = await notion.dataSources.query({
       data_source_id: picksDsId(),
       start_cursor: cursor,
-      filter: {
-        and: [
-          { property: "Date", date: { on_or_after: cutoffStr } },
-          {
-            or: [
-              { property: "Result", select: { equals: "Win" } },
-              { property: "Result", select: { equals: "Loss" } },
-              { property: "Result", select: { equals: "Push" } },
-            ],
-          },
-        ],
-      },
+      filter,
     } as any);
 
     for (const page of res.results) {
+      allPages.push(page);
       const result = (page as any).properties?.["Result"]?.select?.name;
       if (result === "Win") wins++;
       else if (result === "Loss") losses++;
@@ -180,7 +206,18 @@ export async function getRunningRecord(days = 30): Promise<RunningRecord> {
     cursor = res.has_more ? (res.next_cursor ?? undefined) : undefined;
   } while (cursor);
 
-  return { wins, losses, pushes };
+  return { wins, losses, pushes, roiUnits: calcRoi(allPages) };
+}
+
+export async function getRunningRecord(days = 30): Promise<RunningRecord> {
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - days);
+  return queryResolvedRecord(cutoff.toISOString().split("T")[0]);
+}
+
+/** All-time season record with ROI — no date filter. */
+export async function getAllTimeRecord(): Promise<RunningRecord> {
+  return queryResolvedRecord();
 }
 
 // ─── Fetch recent resolved picks for self-learning loop ──────────────────────
