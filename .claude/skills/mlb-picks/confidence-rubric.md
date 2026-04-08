@@ -89,10 +89,10 @@ Numeric adjustments are the canonical source in `.tmp/calibration_adjustments.js
 <!-- AUTO:BUCKET_TABLE_START -->
 | Bucket | Predicted Win% | Actual Win% | Sample | Adjustment | Status |
 |---|---|---|---|---|---|
-| 80-95% | ~72% | — | 0 | 0 | Insufficient data (0 picks, need 5) |
-| 70-79% | ~65% | — | 0 | 0 | Insufficient data (0 picks, need 5) |
-| 60-69% | ~58% | — | 0 | 0 | Insufficient data (0 picks, need 5) |
-| 50-59% | ~52% | — | 0 | 0 | Insufficient data (0 picks, need 5) |
+| 80-95% | ~72.0% | — | 0 | 0 | Insufficient data (0 picks, need 5) |
+| 70-79% | ~65.0% | 40.0% | 5 | -15 | Overconfident by 25.0 pts |
+| 60-69% | ~58.0% | 14.3% | 7 | -20 | Overconfident by 43.7 pts |
+| 50-59% | ~52.0% | 16.7% | 6 | -20 | Overconfident by 35.3 pts |
 <!-- AUTO:BUCKET_TABLE_END -->
 
 ### By Bet Type
@@ -100,10 +100,10 @@ Numeric adjustments are the canonical source in `.tmp/calibration_adjustments.js
 <!-- AUTO:TYPE_TABLE_START -->
 | Bet Type | Record | Win% | ROI (units) | Adjustment |
 |---|---|---|---|---|
-| Bet of Day | — | — | — | 0 |
-| Underdog | — | — | — | 0 |
-| Top 3 | — | — | — | 0 |
-| Game Pick | — | — | — | 0 |
+| Bet of Day | 1-1 | 50.0% | -0.15 | 0 |
+| Underdog | 0-1 | 0.0% | -1.0 | 0 |
+| Top 3 | 3-1 | 75.0% | 1.67 | 0 |
+| Game Pick | 2-12 | 14.3% | -10.2 | -10 |
 <!-- AUTO:TYPE_TABLE_END -->
 
 ### Structural Edges Detected
@@ -113,14 +113,15 @@ Numeric adjustments are the canonical source in `.tmp/calibration_adjustments.js
 ### Last Updated
 
 <!-- AUTO:LAST_UPDATED_START -->
-Date: (not yet updated — season just started)
+Date: 2026-04-08 (auto-updated by update_calibration.py)
 
-Summary: No resolved picks yet. Calibration active once 5+ picks per bucket accumulate.
+Summary: Overall last 21 resolved picks: 6-15 (28.6% win rate). Largest deviation: 60-69% confidence bucket is overconfident by 43.7 pts (actual 14.3% vs predicted 58.0%). Game Pick picks are underperforming at 14.3% win rate (adjustment: -10). Global fallback adjustment: -8.0 pts.
 
-Global fallback adjustment: +0.0 pts
+Global fallback adjustment: -8.0 pts
 
 Patterns flagged:
-- None detected yet
+- Game Pick: 14.3% win rate (14 picks) — WEAK AREA, reduce confidence
+- Strong: 28.6% win rate (14 picks) — WEAK AREA, reduce confidence
 <!-- AUTO:LAST_UPDATED_END -->
 
 ---

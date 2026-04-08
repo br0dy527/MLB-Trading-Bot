@@ -267,41 +267,70 @@ def update_pick_result(page_id: str, result: str, score_summary: str = None) -> 
     return "error" not in resp
 
 
-def update_pending_results(target_date: str = None) -> dict:
-    """
-    Fetch all pending picks for target_date (yesterday by default),
-    look up final scores, and update Notion.
-    """
-    if not target_date:
-        target_date = str(date.today() - timedelta(days=1))
+def get_all_time_summary() -> dict:
+    """Query all resolved picks with no date filter for season/all-time totals."""
+    if not NOTION_TOKEN or not PICKS_DB_ID:
+        return {"error": "NOTION_TOKEN or NOTION_PICKS_DB_ID not set in .env"}
 
-    # Query Notion for Pending picks on that date
     filter_body = {
-        "and": [
-            {"property": "Date", "date": {"equals": target_date}},
-            {"property": "Result", "select": {"equals": "Pending"}},
+        "or": [
+            {"property": "Result", "select": {"equals": "Win"}},
+            {"property": "Result", "select": {"equals": "Loss"}},
+            {"property": "Result", "select": {"equals": "Push"}},
         ]
     }
     pages = query_picks_db(filter_body)
+    if not pages:
+        return {"wins": 0, "losses": 0, "pushes": 0, "win_pct": 0.0, "roi_units": 0.0}
+    if "error" in pages[0]:
+        return pages[0]
 
-    if not pages or "error" in pages[0]:
-        return {"error": pages[0].get("error", "No pages found"), "date": target_date}
+    wins = losses = pushes = 0
+    total_return = 0.0
+    for page in pages:
+        result = extract_prop(page, "Result")
+        odds = extract_prop(page, "Odds")
+        if result == "Win":
+            wins += 1
+            if odds:
+                total_return += (odds / 100) if odds > 0 else (100 / abs(odds))
+        elif result == "Loss":
+            losses += 1
+            total_return -= 1
+        elif result == "Push":
+            pushes += 1
 
-    updated = 0
-    failed = 0
-    results = []
+    total = wins + losses
+    return {
+        "wins": wins,
+        "losses": losses,
+        "pushes": pushes,
+        "win_pct": round(wins / total * 100, 1) if total else 0.0,
+        "roi_units": round(total_return, 2),
+    }
+
+
+def _resolve_pages(pages: list) -> tuple:
+    """
+    Shared resolution logic: fetch final scores, update Notion, return (updated, failed, details, resolved).
+    resolved entries: {date, bet_type, bet, result}
+    """
+    updated = failed = 0
+    details = []
+    resolved = []
 
     for page in pages:
         page_id = page.get("id")
         matchup = extract_prop(page, "Matchup")
         bet_desc = extract_prop(page, "Pick")
-        game_id = extract_prop(page, "GameID")  # Optional field
+        bet_type = extract_prop(page, "Bet Type") or "Game Pick"
+        pick_date = extract_prop(page, "Date") or ""
+        game_id = extract_prop(page, "GameID")
 
-        # Try to resolve via game_id if available
         result = "Pending"
+        score = {}
         if game_id:
             score = get_final_score(int(game_id))
-            # Extract team names from matchup (e.g., "NYY @ BOS")
             parts = matchup.split("@") if "@" in matchup else ["", ""]
             away_team = parts[0].strip()
             home_team = parts[1].strip()
@@ -312,24 +341,97 @@ def update_pending_results(target_date: str = None) -> dict:
 
         if result != "Pending":
             score_note = None
-            if "home_runs" in score and score["home_runs"] is not None:
+            if score.get("home_runs") is not None:
                 score_note = f"Final: {away_team} {score['away_runs']}, {home_team} {score['home_runs']}"
             success = update_pick_result(page_id, result, score_note)
             if success:
                 updated += 1
             else:
                 failed += 1
-            results.append({"matchup": matchup, "bet": bet_desc, "result": result, "updated": success})
+            resolved.append({"date": pick_date, "bet_type": bet_type, "bet": bet_desc, "result": result})
+            details.append({"date": pick_date, "matchup": matchup, "bet_type": bet_type, "bet": bet_desc, "result": result, "updated": success})
         else:
-            results.append({"matchup": matchup, "bet": bet_desc, "result": "Pending", "note": "Could not resolve"})
+            details.append({"date": pick_date, "matchup": matchup, "bet_type": bet_type, "bet": bet_desc, "result": "Pending", "note": "Could not resolve"})
+
+    return updated, failed, details, resolved
+
+
+def update_pending_results(target_date: str = None) -> dict:
+    """
+    Resolves ALL pending picks across all dates (not just yesterday), updates Notion,
+    and returns a structured scoreboard scoped to yesterday's picks.
+    target_date controls which date's picks populate the scoreboard (defaults to yesterday).
+    """
+    yesterday = str(date.today() - timedelta(days=1))
+    scoreboard_date = target_date or yesterday
+
+    # Query ALL pending picks regardless of date
+    filter_body = {"property": "Result", "select": {"equals": "Pending"}}
+    pages = query_picks_db(filter_body)
+
+    if not pages or "error" in pages[0]:
+        return {"error": pages[0].get("error", "No pending picks found")}
+
+    updated, failed, details, resolved = _resolve_pages(pages)
+
+    # Scoreboard uses only picks from scoreboard_date
+    yesterday_resolved = [r for r in resolved if r.get("date", "").startswith(scoreboard_date)]
+
+    def _find_by_type(bt):
+        return next((r for r in yesterday_resolved if r["bet_type"] == bt), None)
+
+    def _record_by_type(bt):
+        subset = [r for r in yesterday_resolved if r["bet_type"] == bt]
+        w = sum(1 for r in subset if r["result"] == "Win")
+        l = sum(1 for r in subset if r["result"] == "Loss")
+        p = sum(1 for r in subset if r["result"] == "Push")
+        total = w + l
+        return {"wins": w, "losses": l, "pushes": p,
+                "win_pct": round(w / total * 100, 1) if total else 0.0}
+
+    botd = _find_by_type("Bet of Day")
+    uotd = _find_by_type("Underdog")
+    top3 = _record_by_type("Top 3")
+
+    yesterday_all = {
+        "wins": sum(1 for r in yesterday_resolved if r["result"] == "Win"),
+        "losses": sum(1 for r in yesterday_resolved if r["result"] == "Loss"),
+        "pushes": sum(1 for r in yesterday_resolved if r["result"] == "Push"),
+    }
+
+    # 30-day and all-time stats (queried after resolution so counts are current)
+    running_30 = get_performance_summary(days=30)
+    all_time = get_all_time_summary()
+
+    scoreboard = {
+        "date": scoreboard_date,
+        "bet_of_day": {
+            "pick": botd["bet"] if botd else "—",
+            "result": botd["result"] if botd else "No pick",
+        },
+        "underdog_of_day": {
+            "pick": uotd["bet"] if uotd else "—",
+            "result": uotd["result"] if uotd else "No pick",
+        },
+        "top_3": top3,
+        "yesterday_overall": yesterday_all,
+        "running_30_day": {
+            "wins": running_30.get("overall", {}).get("wins", 0),
+            "losses": running_30.get("overall", {}).get("losses", 0),
+            "win_pct": running_30.get("overall", {}).get("win_pct", 0.0),
+            "roi_units": running_30.get("roi_units", 0.0),
+        },
+        "all_time": all_time,
+    }
 
     return {
-        "date": target_date,
-        "total_pending": len(pages),
+        "scoreboard_date": scoreboard_date,
+        "all_pending_found": len(pages),
         "updated": updated,
         "failed": failed,
         "still_pending": len(pages) - updated,
-        "details": results,
+        "scoreboard": scoreboard,
+        "details": details,
     }
 
 

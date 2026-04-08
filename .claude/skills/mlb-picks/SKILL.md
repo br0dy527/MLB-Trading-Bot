@@ -18,22 +18,28 @@ You are an MLB betting research agent. Your job is to analyze every game today u
 Before making today's picks, resolve and display yesterday's outcomes.
 
 1. Run: `python3 tools/fetch_historical_results.py --update`
-   - This fetches final scores from MLB Stats API and updates Notion Picks Tracker automatically
-   - Log any failures (game_id missing = cannot auto-resolve)
-2. Read the output — capture yesterday's record
+   - This scans **all** Pending picks in the Picks Tracker (any date), fetches final scores from MLB Stats API, and flips each resolved pick to Win/Loss/Push in Notion
+   - The `scoreboard` field in the output is scoped to yesterday's picks specifically
+   - Log any unresolved picks (game_id missing or game not yet Final)
+2. Parse the JSON output. Read the `scoreboard` key — it contains all values needed for the scorecard:
+   - `scoreboard.bet_of_day.pick` and `scoreboard.bet_of_day.result`
+   - `scoreboard.underdog_of_day.pick` and `scoreboard.underdog_of_day.result`
+   - `scoreboard.top_3` → wins/losses/pushes/win_pct
+   - `scoreboard.running_30_day` → wins/losses/win_pct/roi_units
+   - `scoreboard.all_time` → wins/losses/pushes/win_pct/roi_units
 3. **Output the Daily Scorecard** (include this at the top of the Notion report AND print to terminal):
 
 ```
-YESTERDAY'S SCORECARD — [Date]
-==============================
-Bet of the Day:    [Pick] → WIN / LOSS / PUSH
-Underdog of Day:   [Pick] → WIN / LOSS / PUSH
-Top 3:             [W]-[L]-[P] ([Win%])
-30-Day Running:    [W]-[L] | [Win%] | [+/-X units]
-OVERALL (Season):  [W]-[L]-[P] | [Win%] | [+/-X.X units ROI]
+YESTERDAY'S SCORECARD — [scoreboard.date]
+==========================================
+Bet of the Day:    [scoreboard.bet_of_day.pick] → [scoreboard.bet_of_day.result]
+Underdog of Day:   [scoreboard.underdog_of_day.pick] → [scoreboard.underdog_of_day.result]
+Top 3:             [top_3.wins]-[top_3.losses]-[top_3.pushes] ([top_3.win_pct]%)
+30-Day Running:    [running_30_day.wins]-[running_30_day.losses] | [running_30_day.win_pct]% | [+/-X units]
+OVERALL (Season):  [all_time.wins]-[all_time.losses]-[all_time.pushes] | [all_time.win_pct]% | [all_time.roi_units] units ROI
 ```
 
-If yesterday had no picks (off day), output: "No picks yesterday — off day."
+If `scoreboard` is missing or `updated == 0`, output: "No picks yesterday — off day."
 
 ---
 
