@@ -41,7 +41,7 @@ Run exactly 4 searches — never per-game. This keeps daily usage to ~4 credits 
 Map each result back to the games in the JSON by team name. If a game cannot be matched (e.g. doubleheader confusion), note "Search data unavailable" for that game — do not run an extra search.
 
 After mapping:
-- Flag eligible bets (-115 or better) — all others ineligible, full stop
+- Flag eligible bets (-120 or better) — all others ineligible, full stop
 - Note reverse line movement (Pillar 8 signal)
 - Apply -10 confidence if lineup is unconfirmed
 

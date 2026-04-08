@@ -107,7 +107,7 @@ def get_recent_starts(player_id: int, n: int = 5) -> list:
         with urllib.request.urlopen(url, timeout=10) as resp:
             data = json.loads(resp.read().decode())
     except Exception as e:
-        return [{"error": f"Recent starts fetch failed: {e}"}]
+        return {"last_n_starts": 0, "recent_era": None, "starts": [], "error": f"Recent starts fetch failed: {e}"}
 
     splits = data.get("stats", [{}])[0].get("splits", [])
     # Filter starts only (IP > 0 and game was started)

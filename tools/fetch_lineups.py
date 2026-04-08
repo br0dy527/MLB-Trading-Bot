@@ -103,18 +103,21 @@ def get_lineup(game_id: int) -> dict:
 
 
 def get_probable_pitchers(game_id: int) -> dict:
-    """Fetch probable pitchers (pre-game, before lineup confirmed)."""
-    url = f"https://statsapi.mlb.com/api/v1/game/{game_id}/feed/live?fields=liveData,boxscore,teams,home,away,team,probablePitcher"
+    """Fetch probable pitchers (pre-game, before lineup confirmed).
+    Uses gameData.probablePitchers which is where the MLB Stats API live feed
+    stores pre-game probable pitcher assignments.
+    """
+    url = f"https://statsapi.mlb.com/api/v1/game/{game_id}/feed/live?fields=gameData,probablePitchers,home,away,id,fullName"
     try:
         with urllib.request.urlopen(url, timeout=10) as resp:
             data = json.loads(resp.read().decode())
     except Exception as e:
         return {"error": f"Probable pitchers fetch failed: {e}"}
 
-    teams = data.get("liveData", {}).get("boxscore", {}).get("teams", {})
+    probables = data.get("gameData", {}).get("probablePitchers", {})
     result = {}
     for side in ("home", "away"):
-        sp = teams.get(side, {}).get("team", {}).get("probablePitcher", {})
+        sp = probables.get(side, {})
         result[side] = {
             "sp_name": sp.get("fullName"),
             "sp_id": sp.get("id"),

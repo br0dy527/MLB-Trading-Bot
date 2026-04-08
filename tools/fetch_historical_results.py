@@ -27,6 +27,41 @@ load_dotenv()
 NOTION_TOKEN = os.environ.get("NOTION_TOKEN", "")
 PICKS_DB_ID = os.environ.get("NOTION_PICKS_DB_ID", "")
 
+# Maps 3-letter abbreviation (as stored in Matchup field) to possible
+# substrings that may appear in the Pick description (uppercased for matching).
+TEAM_NAME_FRAGMENTS = {
+    "LAA": ["LAA", "ANGELS"],
+    "ARI": ["ARI", "DIAMONDBACKS", "D-BACKS", "ARIZONA"],
+    "BAL": ["BAL", "ORIOLES", "BALTIMORE"],
+    "BOS": ["BOS", "RED SOX", "BOSTON"],
+    "CHC": ["CHC", "CUBS"],
+    "CIN": ["CIN", "REDS", "CINCINNATI"],
+    "CLE": ["CLE", "GUARDIANS", "CLEVELAND"],
+    "COL": ["COL", "ROCKIES", "COLORADO"],
+    "DET": ["DET", "TIGERS", "DETROIT"],
+    "HOU": ["HOU", "ASTROS", "HOUSTON"],
+    "KC":  ["KC", "ROYALS", "KANSAS CITY"],
+    "LAD": ["LAD", "DODGERS"],
+    "WSH": ["WSH", "NATIONALS", "WASHINGTON"],
+    "NYM": ["NYM", "METS"],
+    "OAK": ["OAK", "ATHLETICS", "OAKLAND"],
+    "PIT": ["PIT", "PIRATES", "PITTSBURGH"],
+    "SD":  ["SD", "PADRES", "SAN DIEGO"],
+    "SEA": ["SEA", "MARINERS", "SEATTLE"],
+    "SF":  ["SF", "GIANTS", "SAN FRANCISCO"],
+    "STL": ["STL", "CARDINALS", "ST. LOUIS", "ST LOUIS"],
+    "TB":  ["TB", "RAYS", "TAMPA BAY"],
+    "TEX": ["TEX", "RANGERS", "TEXAS"],
+    "TOR": ["TOR", "BLUE JAYS", "TORONTO"],
+    "MIN": ["MIN", "TWINS", "MINNESOTA"],
+    "PHI": ["PHI", "PHILLIES", "PHILADELPHIA"],
+    "ATL": ["ATL", "BRAVES", "ATLANTA"],
+    "CWS": ["CWS", "WHITE SOX"],
+    "MIA": ["MIA", "MARLINS", "MIAMI"],
+    "NYY": ["NYY", "YANKEES"],
+    "MIL": ["MIL", "BREWERS", "MILWAUKEE"],
+}
+
 
 # ---------------------------------------------------------------------------
 # Notion API helpers
@@ -76,27 +111,54 @@ def query_picks_db(filter_body: dict) -> list:
 # ---------------------------------------------------------------------------
 
 def get_final_score(game_id: int) -> dict:
-    """Fetch final score for a game from MLB Stats API."""
-    url = f"https://statsapi.mlb.com/api/v1/game/{game_id}/linescore"
+    """Fetch final score for a game from MLB Stats API.
+    Uses the schedule endpoint so we can check abstractGameState == 'Final'
+    rather than guessing from currentInning (which is True mid-9th).
+    """
+    url = f"https://statsapi.mlb.com/api/v1/schedule?gamePk={game_id}&hydrate=linescore"
     try:
         with urllib.request.urlopen(url, timeout=10) as resp:
             data = json.loads(resp.read().decode())
-        teams = data.get("teams", {})
+
+        dates = data.get("dates", [])
+        if not dates or not dates[0].get("games"):
+            return {"error": f"Game {game_id} not found in schedule API"}
+
+        game = dates[0]["games"][0]
+        abstract_state = game.get("status", {}).get("abstractGameState", "")
+
+        if abstract_state != "Final":
+            return {
+                "home_runs": None,
+                "away_runs": None,
+                "is_final": False,
+                "status": abstract_state,
+            }
+
+        linescore = game.get("linescore", {})
+        teams = linescore.get("teams", {})
         home = teams.get("home", {})
         away = teams.get("away", {})
         return {
             "home_runs": home.get("runs"),
             "away_runs": away.get("runs"),
-            "is_final": data.get("currentInning", 0) >= 9,
+            "is_final": True,
         }
     except Exception as e:
         return {"error": f"Score fetch failed: {e}"}
+
+
+def _team_in_bet(team_abbr: str, bet_upper: str) -> bool:
+    """Returns True if any known name fragment for team_abbr appears in the uppercased bet string."""
+    fragments = TEAM_NAME_FRAGMENTS.get(team_abbr.upper(), [team_abbr.upper()])
+    return any(f in bet_upper for f in fragments)
 
 
 def resolve_pick_result(pick: dict, final_score: dict) -> str:
     """
     Given a pick dict and final score, returns "Win", "Loss", "Push", or "Pending".
     pick fields: bet_description (e.g. "MIN ML (-108)"), home_team, away_team
+    home_team / away_team should be 2-3 letter abbreviations as stored in the Matchup field.
     """
     if "error" in final_score:
         return "Pending"
@@ -111,80 +173,54 @@ def resolve_pick_result(pick: dict, final_score: dict) -> str:
         return "Pending"
 
     bet = pick.get("bet_description", "").upper()
-    home_team = pick.get("home_team", "").upper()
-    away_team = pick.get("away_team", "").upper()
+    home_team = pick.get("home_team", "").strip()
+    away_team = pick.get("away_team", "").strip()
 
-    # Determine which team names are in the bet
     home_wins = home_runs > away_runs
     away_wins = away_runs > home_runs
     tied = home_runs == away_runs
 
     # ML bet
     if "ML" in bet:
-        if any(t in bet for t in [home_team[:3], home_team.split()[-1].upper()]):
-            if home_wins:
-                return "Win"
-            elif tied:
-                return "Push"
-            else:
-                return "Loss"
-        elif any(t in bet for t in [away_team[:3], away_team.split()[-1].upper()]):
-            if away_wins:
-                return "Win"
-            elif tied:
-                return "Push"
-            else:
-                return "Loss"
+        if _team_in_bet(home_team, bet):
+            return "Win" if home_wins else ("Push" if tied else "Loss")
+        elif _team_in_bet(away_team, bet):
+            return "Win" if away_wins else ("Push" if tied else "Loss")
 
     # Run line -1.5
     if "-1.5" in bet:
-        if any(t in bet for t in [home_team[:3], home_team.split()[-1].upper()]):
+        if _team_in_bet(home_team, bet):
             if home_runs - away_runs >= 2:
                 return "Win"
-            elif home_runs - away_runs == 0:
-                return "Push"
             else:
                 return "Loss"
-        elif any(t in bet for t in [away_team[:3], away_team.split()[-1].upper()]):
+        elif _team_in_bet(away_team, bet):
             if away_runs - home_runs >= 2:
                 return "Win"
-            elif away_runs - home_runs == 0:
-                return "Push"
             else:
                 return "Loss"
 
     # Run line +1.5
     if "+1.5" in bet:
-        total = home_runs + away_runs
-        if any(t in bet for t in [home_team[:3], home_team.split()[-1].upper()]):
-            if home_runs + 1.5 > away_runs:
-                return "Win"
-            else:
-                return "Loss"
-        elif any(t in bet for t in [away_team[:3], away_team.split()[-1].upper()]):
-            if away_runs + 1.5 > home_runs:
-                return "Win"
-            else:
-                return "Loss"
+        if _team_in_bet(home_team, bet):
+            return "Win" if home_runs + 1.5 > away_runs else "Loss"
+        elif _team_in_bet(away_team, bet):
+            return "Win" if away_runs + 1.5 > home_runs else "Loss"
 
     # Over/Under
     total = (home_runs or 0) + (away_runs or 0)
     if "OVER" in bet:
-        line = float(bet.split("OVER")[-1].strip().split()[0])
-        if total > line:
-            return "Win"
-        elif total == line:
-            return "Push"
-        else:
-            return "Loss"
+        try:
+            line = float(bet.split("OVER")[-1].strip().split()[0])
+            return "Win" if total > line else ("Push" if total == line else "Loss")
+        except (ValueError, IndexError):
+            return "Pending"
     if "UNDER" in bet:
-        line = float(bet.split("UNDER")[-1].strip().split()[0])
-        if total < line:
-            return "Win"
-        elif total == line:
-            return "Push"
-        else:
-            return "Loss"
+        try:
+            line = float(bet.split("UNDER")[-1].strip().split()[0])
+            return "Win" if total < line else ("Push" if total == line else "Loss")
+        except (ValueError, IndexError):
+            return "Pending"
 
     return "Pending"  # Could not determine
 
@@ -275,7 +311,10 @@ def update_pending_results(target_date: str = None) -> dict:
             )
 
         if result != "Pending":
-            success = update_pick_result(page_id, result)
+            score_note = None
+            if "home_runs" in score and score["home_runs"] is not None:
+                score_note = f"Final: {away_team} {score['away_runs']}, {home_team} {score['home_runs']}"
+            success = update_pick_result(page_id, result, score_note)
             if success:
                 updated += 1
             else:

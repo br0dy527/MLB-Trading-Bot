@@ -80,7 +80,7 @@ Extract from search results for **every game** — all of the following are requ
 - Run line odds (Home -1.5, Away +1.5)
 - **Total (O/U line) and over/under odds** — always note the total and both over/under prices
 
-Then mentally apply `fetch_odds.py` logic: tag each bet as eligible (-120 or better) or ineligible.
+Then mentally apply `fetch_odds.py` logic: tag each bet as eligible (-120 or better) or ineligible. Any bet worse than -120 is ineligible, full stop.
 
 Also search: "[Away Team] vs [Home Team] odds movement" to detect if line has moved since opening.
 
@@ -122,7 +122,7 @@ For each game with at least one eligible bet:
 7. **Apply auto-caps** if conditions met
 8. **Select the best eligible bet type** for this game (ML, RL, total)
 
-For games with NO eligible bets (all lines worse than -120): Note "No eligible bet" and move on.
+For games with NO eligible bets (all lines -121 or worse): Note "No eligible bet" and move on.
 
 ---
 
