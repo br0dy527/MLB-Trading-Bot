@@ -41,7 +41,7 @@ MIN_SAMPLE_TYPE = 5
 # Bucket lookup
 # ---------------------------------------------------------------------------
 
-def get_bucket(confidence) -> str | None:
+def get_bucket(confidence):
     if confidence is None:
         return None
     c = int(confidence)
