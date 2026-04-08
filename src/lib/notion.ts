@@ -282,19 +282,6 @@ export async function createDailyReport(data: DailyReportData): Promise<string> 
     weekday: "long", month: "long", day: "2-digit", year: "numeric",
   });
 
-  // Idempotency: if a report already exists for this date, return its URL instead of creating a duplicate
-  const existing = await notion.dataSources.query({
-    data_source_id: reportsDsId(),
-    filter: { property: "Date", title: { contains: data.date } },
-    page_size: 1,
-  } as any);
-
-  if (existing.results.length > 0) {
-    const existingPage = existing.results[0] as any;
-    console.log(`[createDailyReport] Report already exists for ${data.date} — skipping duplicate creation`);
-    return existingPage.url ?? `https://notion.so/${existingPage.id.replace(/-/g, "")}`;
-  }
-
   const page = await notion.pages.create({
     parent: { type: "database_id", database_id: reportsDbId() },
     properties: {
