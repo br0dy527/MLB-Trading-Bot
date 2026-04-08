@@ -1,4 +1,4 @@
-// Scheduled parent task — runs daily at 12:30 PM ET
+// Scheduled parent task — runs daily at 12:15 PM ET
 // 1. Scores yesterday's picks (Notion + MLB final scores)
 // 2. Fetches today's game data (child task)
 // 3. Runs analysis and publishes to Notion (child task)
@@ -180,6 +180,47 @@ export const mlbOrchestratorTask = schedules.task({
   },
 });
 
+// ─── Team name fragments for robust pick matching ────────────────────────────
+// Maps 3-letter abbreviation to all substrings that may appear in a pick description.
+
+const TEAM_FRAGMENTS: Record<string, string[]> = {
+  laa: ["laa", "angels"],
+  ari: ["ari", "diamondbacks", "d-backs", "arizona"],
+  bal: ["bal", "orioles", "baltimore"],
+  bos: ["bos", "red sox", "boston"],
+  chc: ["chc", "cubs"],
+  cin: ["cin", "reds", "cincinnati"],
+  cle: ["cle", "guardians", "cleveland"],
+  col: ["col", "rockies", "colorado"],
+  det: ["det", "tigers", "detroit"],
+  hou: ["hou", "astros", "houston"],
+  kc:  ["kc", "royals", "kansas city"],
+  lad: ["lad", "dodgers"],
+  wsh: ["wsh", "nationals", "washington"],
+  nym: ["nym", "mets"],
+  oak: ["oak", "athletics", "oakland"],
+  pit: ["pit", "pirates", "pittsburgh"],
+  sd:  ["sd", "padres", "san diego"],
+  sea: ["sea", "mariners", "seattle"],
+  sf:  ["sf", "giants", "san francisco"],
+  stl: ["stl", "cardinals", "st. louis", "st louis"],
+  tb:  ["tb", "rays", "tampa bay"],
+  tex: ["tex", "rangers", "texas"],
+  tor: ["tor", "blue jays", "toronto"],
+  min: ["min", "twins", "minnesota"],
+  phi: ["phi", "phillies", "philadelphia"],
+  atl: ["atl", "braves", "atlanta"],
+  cws: ["cws", "white sox"],
+  mia: ["mia", "marlins", "miami"],
+  nyy: ["nyy", "yankees"],
+  mil: ["mil", "brewers", "milwaukee"],
+};
+
+function teamInPick(abbr: string, desc: string): boolean {
+  const frags = TEAM_FRAGMENTS[abbr.toLowerCase()] ?? [abbr.toLowerCase()];
+  return frags.some(f => desc.includes(f));
+}
+
 // ─── Resolve a pick to Win/Loss/Push based on final score ────────────────────
 
 function resolvePick(
@@ -190,41 +231,46 @@ function resolvePick(
   matchup: string  // "AWAY @ HOME"
 ): "Win" | "Loss" | "Push" {
   const desc = pickDescription.toLowerCase();
-  const [awayAbbr, homeAbbr] = matchup.split(" @ ").map(s => s.trim().toLowerCase());
+  const parts = matchup.split(" @ ");
+  const awayAbbr = (parts[0] ?? "").trim();
+  const homeAbbr = (parts[1] ?? "").trim();
 
-  // Determine if we're picking home or away
-  const pickingHome =
-    homeAbbr ? desc.includes(homeAbbr) : false ||
-    (!awayAbbr || !desc.includes(awayAbbr));
+  const pickingHome = teamInPick(homeAbbr, desc);
+  const pickingAway = teamInPick(awayAbbr, desc);
 
-  const ourScore = pickingHome ? homeScore : awayScore;
-  const theirScore = pickingHome ? awayScore : homeScore;
+  // Default to home if neither matches (shouldn't happen with well-formed picks)
+  const useHome = pickingHome || !pickingAway;
+
+  const ourScore = useHome ? homeScore : awayScore;
+  const theirScore = useHome ? awayScore : homeScore;
   const totalScore = homeScore + awayScore;
 
   // Over/Under
   if (desc.includes("over ")) {
-    const line = parseFloat(desc.split("over ")[1] ?? "0");
-    if (totalScore > line) return "Win";
-    if (totalScore < line) return "Loss";
-    return "Push";
+    const line = parseFloat(desc.split("over ")[1]?.trim().split(/\s/)[0] ?? "0");
+    if (!isNaN(line)) {
+      if (totalScore > line) return "Win";
+      if (totalScore < line) return "Loss";
+      return "Push";
+    }
   }
   if (desc.includes("under ")) {
-    const line = parseFloat(desc.split("under ")[1] ?? "0");
-    if (totalScore < line) return "Win";
-    if (totalScore > line) return "Loss";
-    return "Push";
+    const line = parseFloat(desc.split("under ")[1]?.trim().split(/\s/)[0] ?? "0");
+    if (!isNaN(line)) {
+      if (totalScore < line) return "Win";
+      if (totalScore > line) return "Loss";
+      return "Push";
+    }
   }
 
   // Run line -1.5
   if (desc.includes("-1.5")) {
-    if (ourScore - theirScore > 1) return "Win";
-    return "Loss";
+    return ourScore - theirScore >= 2 ? "Win" : "Loss";
   }
 
   // Run line +1.5
   if (desc.includes("+1.5")) {
-    if (ourScore - theirScore >= -1) return "Win";
-    return "Loss";
+    return ourScore - theirScore >= -1 ? "Win" : "Loss";
   }
 
   // Moneyline
