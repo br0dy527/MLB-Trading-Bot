@@ -227,18 +227,20 @@ P3 Bullpen Quality (weight 2): Compare bullpen ERAs, series game number, closer 
 P4 Home/Away Record & Park Context (weight 1): Home win%, away win%, park factor (>102 = hitter-friendly, <97 = pitcher-friendly).
 P5 Recent Form (weight 2): Last 10 record, streak, run differential.
 P6 Environmental + Totals (weight 1): Temp, wind effect, altitude. Dome = NEUTRAL. Coors Field always note altitude.
-**For EVERY game, use the pre-computed \`totals_context\` field in the game data to evaluate Over/Under:**
-- \`totals_context.expected_total\` = the model's projected run total (already accounts for R/G baseline, SP quality, park, and weather)
-- \`totals_context.notes\` = shows the step-by-step breakdown
-- Compare expected_total vs the posted O/U line from odds data. Delta = expected_total - posted_line.
+**For EVERY game, use the pre-computed \`totalsContext\` field in the game data to evaluate Over/Under:**
+- \`totalsContext.expectedTotal\` = the model's projected run total (already accounts for R/G baseline, SP quality, park, and weather)
+- \`totalsContext.homeRpg\` / \`totalsContext.awayRpg\` = each team's runs per game this season
+- \`totalsContext.notes\` = step-by-step breakdown of adjustments applied
+- Compare expectedTotal vs the posted O/U line from odds data. Delta = expectedTotal - posted_line.
   - Delta ≥ +1.5 → strong OVER lean; +0.75 to +1.49 → moderate OVER lean
   - Delta ≤ -1.5 → strong UNDER lean; -0.75 to -1.49 → moderate UNDER lean
   - |Delta| < 0.75 → no meaningful totals edge
-- Also use \`offense_context\` fields for secondary signals:
-  - wrc_plus > 115 = elite offense (over pressure); < 85 = weak offense (under pressure)
-  - k_pct > 25% = high strikeout rate → fewer baserunners → under pressure
-  - obp > .340 = lots of baserunners → over pressure
-  - bullpen_era > 4.50 = leaky bullpen → late-inning runs likely → over pressure
+- Also use \`totalsContext.offenseContext\` fields for secondary signals:
+  - \`homeOps\` / \`awayOps\` > .800 = strong offense (over pressure); < .680 = weak offense (under pressure)
+  - \`homeKPct\` / \`awayKPct\` > 25 = high strikeout rate → under pressure
+  - \`homeObp\` / \`awayObp\` > .340 = lots of baserunners → over pressure
+  - \`homeBullpenEra\` / \`awayBullpenEra\` > 4.50 = leaky bullpen → late-inning runs → over pressure
+- Always state the expectedTotal and delta explicitly in your \`notes\` field for any over/under pick (e.g. "Model projects 9.4 runs vs posted line 8.5 → delta +0.9, moderate OVER lean").
 **If the totals delta is stronger than your ML confidence edge, pick the Over/Under instead of the moneyline.**
 P7 Travel & Fatigue (weight 1): Day game after night game, series game 3+, cross-country travel.
 P8 Line Movement / Sharp Money (weight 2): Extract from line movement search data. If no data: NEUTRAL.
