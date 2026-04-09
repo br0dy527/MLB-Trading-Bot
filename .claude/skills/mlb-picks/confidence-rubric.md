@@ -106,6 +106,18 @@ Numeric adjustments are the canonical source in `.tmp/calibration_adjustments.js
 | Game Pick | 2-12 | 14.3% | -10.2 | -10 |
 <!-- AUTO:TYPE_TABLE_END -->
 
+### Bet Subtype Performance (ML vs RL vs Over vs Under)
+
+<!-- AUTO:SUBTYPE_TABLE_START -->
+| Subtype | Record | Win% | ROI (units) | Adjustment |
+|---|---|---|---|---|
+| ML | — | — | — | 0 |
+| RL-1.5 | — | — | — | 0 |
+| RL+1.5 | — | — | — | 0 |
+| Over | — | — | — | 0 |
+| Under | — | — | — | 0 |
+<!-- AUTO:SUBTYPE_TABLE_END -->
+
 ### Structural Edges Detected
 
 *Patterns with 15+ picks and >10% deviation from expectation. Populated automatically.*

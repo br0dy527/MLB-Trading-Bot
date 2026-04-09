@@ -46,6 +46,163 @@ def utc_to_et(utc_str: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Totals context: pre-compute expected run total for each game
+# ---------------------------------------------------------------------------
+
+def _compute_totals_context(game_data: dict) -> dict:
+    """
+    Computes a pre-baked expected run total using:
+      - Team offensive R/G baseline (season runs ÷ games played)
+      - SP ERA and K/9 suppression adjustments
+      - Park run factor adjustment
+      - Weather wind adjustment
+      - Temperature adjustment
+
+    Returns a dict Claude can use directly rather than deriving from scratch.
+    """
+    notes = []
+
+    def safe_float(val, default=None):
+        try:
+            f = float(val)
+            return f if not (f != f) else default  # NaN check
+        except (TypeError, ValueError):
+            return default
+
+    # --- Offensive baseline: runs per game ---
+    home_stats = game_data.get("home_team_stats", {})
+    away_stats = game_data.get("away_team_stats", {})
+
+    home_batting = home_stats.get("batting", {})
+    away_batting = away_stats.get("batting", {})
+    home_record = home_stats.get("record", {})
+    away_record = away_stats.get("record", {})
+
+    home_runs = safe_float(home_batting.get("runs"))
+    away_runs = safe_float(away_batting.get("runs"))
+    home_gp = (safe_float(home_record.get("wins"), 0) or 0) + (safe_float(home_record.get("losses"), 0) or 0)
+    away_gp = (safe_float(away_record.get("wins"), 0) or 0) + (safe_float(away_record.get("losses"), 0) or 0)
+
+    home_rpg = round(home_runs / home_gp, 2) if home_runs and home_gp > 0 else None
+    away_rpg = round(away_runs / away_gp, 2) if away_runs and away_gp > 0 else None
+
+    if home_rpg is None or away_rpg is None:
+        return {
+            "home_rpg": home_rpg,
+            "away_rpg": away_rpg,
+            "raw_expected_total": None,
+            "sp_adjustment": None,
+            "park_adjustment": None,
+            "weather_adjustment": None,
+            "expected_total": None,
+            "lean": "insufficient_data",
+            "notes": ["Insufficient team stats to compute expected total."],
+        }
+
+    raw_total = home_rpg + away_rpg
+    notes.append(f"Offensive baseline: {game_data.get('home_abbr')} {home_rpg} R/G + {game_data.get('away_abbr')} {away_rpg} R/G = {round(raw_total, 2)} raw")
+
+    # --- SP adjustment ---
+    sp_adj = 0.0
+    for side, sp_key in [("home", "home_sp"), ("away", "away_sp")]:
+        sp = game_data.get(sp_key, {})
+        era = safe_float(sp.get("era")) or safe_float(sp.get("season_era"))
+        k9 = safe_float(sp.get("k9")) or safe_float(sp.get("season_k9"))
+        sp_name = sp.get("pitcher_name") or sp.get("name") or side.upper() + " SP"
+        sp_notes = []
+        if era is not None and era < 3.50:
+            sp_adj -= 0.4
+            sp_notes.append(f"ERA {era} (<3.50, -0.4)")
+        if k9 is not None and k9 > 9.5:
+            sp_adj -= 0.3
+            sp_notes.append(f"K/9 {k9} (>9.5, -0.3)")
+        if sp_notes:
+            notes.append(f"{sp_name}: {', '.join(sp_notes)}")
+
+    sp_adj = round(sp_adj, 2)
+
+    # --- Park adjustment ---
+    park_adj = 0.0
+    park_data = game_data.get("park_factors", {})
+    run_factor = safe_float(park_data.get("run_factor"))
+    if run_factor is not None:
+        if run_factor >= 115:
+            park_adj = 1.75
+            notes.append(f"Park factor {run_factor} (extreme hitter, +1.75)")
+        elif run_factor >= 105:
+            park_adj = 0.5
+            notes.append(f"Park factor {run_factor} (hitter-friendly, +0.5)")
+        elif run_factor <= 94:
+            park_adj = -0.75
+            notes.append(f"Park factor {run_factor} (strong pitcher-friendly, -0.75)")
+        elif run_factor <= 97:
+            park_adj = -0.5
+            notes.append(f"Park factor {run_factor} (pitcher-friendly, -0.5)")
+    park_adj = round(park_adj, 2)
+
+    # --- Weather adjustment ---
+    weather_adj = 0.0
+    weather = game_data.get("weather", {})
+    wind_effect = weather.get("wind_effect") or weather.get("windEffect")
+    temp_f = safe_float(weather.get("temp_f") or weather.get("tempF"))
+    is_dome = park_data.get("is_dome") or game_data.get("is_dome", False)
+
+    if is_dome:
+        notes.append("Dome — weather neutral (0)")
+    else:
+        if wind_effect == "strong_wind_blowing_out":
+            weather_adj += 0.75
+            notes.append("Wind blowing out strongly (+0.75)")
+        elif wind_effect == "strong_wind_blowing_in":
+            weather_adj -= 0.75
+            notes.append("Wind blowing in strongly (-0.75)")
+        if temp_f is not None and temp_f < 50:
+            weather_adj -= 0.5
+            notes.append(f"Cold game ({temp_f}°F, -0.5)")
+        elif temp_f is not None and temp_f > 80:
+            weather_adj += 0.25
+            notes.append(f"Hot game ({temp_f}°F, +0.25)")
+    weather_adj = round(weather_adj, 2)
+
+    # --- Combined expected total ---
+    expected_total = round(raw_total + sp_adj + park_adj + weather_adj, 2)
+
+    # --- Additional context: bullpen, offense quality ---
+    home_bullpen = home_stats.get("bullpen", {})
+    away_bullpen = away_stats.get("bullpen", {})
+    home_bp_era = safe_float(home_bullpen.get("team_era"))
+    away_bp_era = safe_float(away_bullpen.get("team_era"))
+    home_kpct = safe_float(home_batting.get("k_pct"))
+    away_kpct = safe_float(away_batting.get("k_pct"))
+    home_obp = safe_float(home_batting.get("obp"))
+    away_obp = safe_float(away_batting.get("obp"))
+    home_wrc = safe_float(home_batting.get("wrc_plus"))
+    away_wrc = safe_float(away_batting.get("wrc_plus"))
+
+    return {
+        "home_rpg": home_rpg,
+        "away_rpg": away_rpg,
+        "raw_expected_total": round(raw_total, 2),
+        "sp_adjustment": sp_adj,
+        "park_adjustment": park_adj,
+        "weather_adjustment": weather_adj,
+        "expected_total": expected_total,
+        "lean": "compare_to_posted_line",  # subtract posted line from expected_total to determine direction
+        "offense_context": {
+            "home_wrc_plus": home_wrc,
+            "away_wrc_plus": away_wrc,
+            "home_obp": home_obp,
+            "away_obp": away_obp,
+            "home_k_pct": home_kpct,
+            "away_k_pct": away_kpct,
+            "home_bullpen_era": home_bp_era,
+            "away_bullpen_era": away_bp_era,
+        },
+        "notes": notes,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Main compiler
 # ---------------------------------------------------------------------------
 
@@ -196,6 +353,9 @@ def compile_game_data(game_date: str = None, historical: bool = False) -> str:
         game_data["odds"] = None  # Populated by agent after WebSearch
         game_data["eligible_bets"] = []  # Populated after odds are fetched
         game_data["data_quality"]["odds"] = "pending_websearch"
+
+        # --- Pre-computed totals context ---
+        game_data["totals_context"] = _compute_totals_context(game_data)
 
         compiled_games.append(game_data)
 

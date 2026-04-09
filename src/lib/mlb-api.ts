@@ -72,6 +72,82 @@ export interface FinalScore {
   awayScore: number;
 }
 
+export interface TeamOffenseStats {
+  teamId: number;
+  gamesPlayed: number;
+  runsPerGame: number;     // runs / gamesPlayed
+  obp: number | null;
+  ops: number | null;
+  avg: number | null;
+  kPct: number | null;     // strikeouts / plateAppearances
+  bbPct: number | null;    // walks / plateAppearances
+}
+
+export interface TeamPitchingStats {
+  teamId: number;
+  era: number | null;
+  whip: number | null;
+  k9: number | null;
+  bullpenEra: number | null; // derived from full-staff ERA (best proxy from this API)
+}
+
+/** Fetches season batting stats for all MLB teams in a single API call. */
+export async function fetchAllTeamOffenseStats(season: number): Promise<Map<number, TeamOffenseStats>> {
+  const url = `https://statsapi.mlb.com/api/v1/teams/stats?stats=season&group=hitting&season=${season}&gameType=R&sportId=1`;
+  const res = await fetch(url);
+  const map = new Map<number, TeamOffenseStats>();
+  if (!res.ok) return map;
+
+  const data = await res.json() as any;
+  for (const split of (data.stats?.[0]?.splits ?? [])) {
+    const teamId: number = split.team?.id;
+    const s = split.stat;
+    if (!teamId || !s) continue;
+
+    const gamesPlayed = s.gamesPlayed ?? 1;
+    const runs = s.runs ?? 0;
+    const so = s.strikeOuts ?? 0;
+    const pa = s.plateAppearances ?? 1;
+    const bb = s.baseOnBalls ?? 0;
+
+    map.set(teamId, {
+      teamId,
+      gamesPlayed,
+      runsPerGame: gamesPlayed > 0 ? Math.round((runs / gamesPlayed) * 100) / 100 : 0,
+      obp: s.obp != null ? parseFloat(s.obp) : null,
+      ops: s.ops != null ? parseFloat(s.ops) : null,
+      avg: s.avg != null ? parseFloat(s.avg) : null,
+      kPct: pa > 0 ? Math.round((so / pa) * 1000) / 10 : null,
+      bbPct: pa > 0 ? Math.round((bb / pa) * 1000) / 10 : null,
+    });
+  }
+  return map;
+}
+
+/** Fetches season pitching stats for all MLB teams in a single API call. */
+export async function fetchAllTeamPitchingStats(season: number): Promise<Map<number, TeamPitchingStats>> {
+  const url = `https://statsapi.mlb.com/api/v1/teams/stats?stats=season&group=pitching&season=${season}&gameType=R&sportId=1`;
+  const res = await fetch(url);
+  const map = new Map<number, TeamPitchingStats>();
+  if (!res.ok) return map;
+
+  const data = await res.json() as any;
+  for (const split of (data.stats?.[0]?.splits ?? [])) {
+    const teamId: number = split.team?.id;
+    const s = split.stat;
+    if (!teamId || !s) continue;
+
+    map.set(teamId, {
+      teamId,
+      era: s.era != null ? parseFloat(s.era) : null,
+      whip: s.whip != null ? parseFloat(s.whip) : null,
+      k9: s.strikeoutsPer9Inn != null ? parseFloat(s.strikeoutsPer9Inn) : null,
+      bullpenEra: s.era != null ? parseFloat(s.era) : null, // team ERA is best available proxy
+    });
+  }
+  return map;
+}
+
 // Venue info lookup: park factor, dome status, coordinates for weather
 const VENUE_INFO: Record<string, { parkFactor: number; isDome: boolean; lat: number | null; lon: number | null }> = {
   "Fenway Park":                   { parkFactor: 103, isDome: false, lat: 42.3467,  lon: -71.0972  },

@@ -146,6 +146,13 @@ function buildPerformanceContext(picks: PickDetail[]): string {
     : 0;
   const roiPct = resolved.length > 0 ? Math.round(avgOddsROI / resolved.length * 100) : 0;
 
+  // 9. Bet subtype performance (ML vs RL vs Totals)
+  const mlBets    = resolved.filter(p => /\bml\b/i.test(p.pick) && !/\bover\b|\bunder\b/i.test(p.pick));
+  const rlMinus   = resolved.filter(p => /-1\.5/.test(p.pick));
+  const rlPlus    = resolved.filter(p => /\+1\.5/.test(p.pick));
+  const overBets  = resolved.filter(p => /\bover\b/i.test(p.pick));
+  const underBets = resolved.filter(p => /\bunder\b/i.test(p.pick));
+
   const lines = [
     `**Period:** Last ${picks.length} resolved picks (${wins.length}W-${losses.length}L-${pushes.length}P)`,
     `**Win rate:** ${Math.round(winRate * 100)}% | **Avg implied prob:** ${Math.round(avgImplied * 100)}% | **Edge vs market:** ${edge > 0 ? "+" : ""}${edge}%`,
@@ -178,6 +185,13 @@ function buildPerformanceContext(picks: PickDetail[]): string {
     `- Picking away team: ${stat(awayPicks)}`,
     ``,
     `**Recent Streak:** Last 10 resolved: ${l10W}W-${10 - l10W}L → ${streakDir}`,
+    ``,
+    `**Bet Subtype Performance (ML vs RL vs Totals):**`,
+    `- Moneyline bets: ${stat(mlBets)}`,
+    `- Run Line -1.5: ${stat(rlMinus)}`,
+    `- Run Line +1.5: ${stat(rlPlus)}`,
+    `- Over bets: ${stat(overBets)}`,
+    `- Under bets: ${stat(underBets)}`,
     ``,
     `**Last 5 Losses (pattern analysis):**`,
     recentLosses.length > 0 ? recentLosses.join("\n") : "  (none yet)",
@@ -212,7 +226,20 @@ P2 Lineup Handedness Splits (weight 3): Apply SP's vs-LHB and vs-RHB ERA/OPS spl
 P3 Bullpen Quality (weight 2): Compare bullpen ERAs, series game number, closer reliability.
 P4 Home/Away Record & Park Context (weight 1): Home win%, away win%, park factor (>102 = hitter-friendly, <97 = pitcher-friendly).
 P5 Recent Form (weight 2): Last 10 record, streak, run differential.
-P6 Environmental Factors (weight 1): Temp, wind effect, altitude. Dome = NEUTRAL. Coors Field always note altitude (+1.5-2 runs). **For every game, note the total line and evaluate whether Over or Under is a meaningful bet** — especially for Coors, high wind, or two elite SPs in a dome.
+P6 Environmental + Totals (weight 1): Temp, wind effect, altitude. Dome = NEUTRAL. Coors Field always note altitude.
+**For EVERY game, use the pre-computed \`totals_context\` field in the game data to evaluate Over/Under:**
+- \`totals_context.expected_total\` = the model's projected run total (already accounts for R/G baseline, SP quality, park, and weather)
+- \`totals_context.notes\` = shows the step-by-step breakdown
+- Compare expected_total vs the posted O/U line from odds data. Delta = expected_total - posted_line.
+  - Delta ≥ +1.5 → strong OVER lean; +0.75 to +1.49 → moderate OVER lean
+  - Delta ≤ -1.5 → strong UNDER lean; -0.75 to -1.49 → moderate UNDER lean
+  - |Delta| < 0.75 → no meaningful totals edge
+- Also use \`offense_context\` fields for secondary signals:
+  - wrc_plus > 115 = elite offense (over pressure); < 85 = weak offense (under pressure)
+  - k_pct > 25% = high strikeout rate → fewer baserunners → under pressure
+  - obp > .340 = lots of baserunners → over pressure
+  - bullpen_era > 4.50 = leaky bullpen → late-inning runs likely → over pressure
+**If the totals delta is stronger than your ML confidence edge, pick the Over/Under instead of the moneyline.**
 P7 Travel & Fatigue (weight 1): Day game after night game, series game 3+, cross-country travel.
 P8 Line Movement / Sharp Money (weight 2): Extract from line movement search data. If no data: NEUTRAL.
 P9 Game Importance (weight 1): Playoff race (within 2 games of first = high motivation), rubber game, rivalry.
@@ -256,9 +283,9 @@ Return an array where each element is:
   "homeTeam": "Full Home Team Name",
   "awayTeam": "Full Away Team Name",
   "venue": "Venue Name",
-  "pickTeam": "Team Name that is picked",
+  "pickTeam": "Team Name that is picked (for OVER/UNDER use 'OVER' or 'UNDER')",
   "betType": "ML" | "RL_MINUS_1_5" | "RL_PLUS_1_5" | "OVER" | "UNDER",
-  "pickDescription": "e.g. NYY ML (-108) or BOS RL +1.5 (+130)",
+  "pickDescription": "MUST include matchup. Examples: 'NYY ML (-108)' | 'BOS RL +1.5 (+130)' | 'NYY/BOS Over 11 (-110)' | 'NYY/BOS Under 8.5 (-115)'. For OVER/UNDER always format as 'AWAY/HOME Over LINE (ODDS)' or 'AWAY/HOME Under LINE (ODDS)'.",
   "odds": -108,
   "eligible": true,
   "noEligibleBet": false,
@@ -312,6 +339,8 @@ ${performanceContext}
 7. **Loss pattern recognition:** Review the last 5 losses above. Identify any recurring themes (e.g., "road teams in cold weather," "pitchers with small IP samples," "line moved against us"). For any game today that matches a loss pattern, apply \`{"reason": "Calibration: matches recent loss pattern — [describe it]", "delta": -5}\`.
 
 8. **ROI signal:** If estimated ROI is negative, you are systematically losing value — tighten eligibility criteria for today. Raise the minimum confidence for Top 3 from 60% to 65%, and for BOTD from 80% to 83%.
+
+9. **Totals calibration (Over/Under):** Check "Over bets" and "Under bets" win rates in the Bet Subtype Performance section above. Apply a \`{"reason": "Calibration: over/under subtype adj", "delta": N}\` adjustment proportional to the deviation from 52% break-even (same scale as other type adjustments: delta per point of deviation × 0.4, capped at ±10). If over win rate < 45% with 5+ sample, also add a gate: only allow OVER picks when P6 expected_total delta ≥ +1.5 runs. If under win rate > 60%, add an extra +3 to any UNDER pick today. If combined over+under win rate < 45% across 5+ samples, require 68% minimum final confidence for any totals bet. Over/Under bets are fully eligible for Bet of Day and Top 3 — evaluate on equal footing with ML bets.
 
 Apply calibration adjustments inside each pick's \`adjustments\` array. Label each one clearly with "Calibration:" prefix so the audit trail is legible.
 

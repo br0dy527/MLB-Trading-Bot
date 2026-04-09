@@ -369,13 +369,42 @@ def update_pending_results(target_date: str = None) -> dict:
     filter_body = {"property": "Result", "select": {"equals": "Pending"}}
     pages = query_picks_db(filter_body)
 
-    if not pages or "error" in pages[0]:
-        return {"error": pages[0].get("error", "No pending picks found")}
+    updated = failed = 0
+    details = []
+    resolved = []
 
-    updated, failed, details, resolved = _resolve_pages(pages)
+    # Only attempt resolution if there are pending picks (and no API error)
+    if pages and "error" not in pages[0]:
+        updated, failed, details, resolved = _resolve_pages(pages)
+    elif pages and "error" in pages[0]:
+        return {"error": pages[0].get("error", "Notion query failed")}
 
-    # Scoreboard uses only picks from scoreboard_date
+    # Scoreboard uses picks from scoreboard_date that were resolved in this run
     yesterday_resolved = [r for r in resolved if r.get("date", "").startswith(scoreboard_date)]
+
+    # If no picks were resolved in this run for scoreboard_date, fetch already-resolved picks from Notion
+    if not yesterday_resolved:
+        already_resolved_filter = {
+            "and": [
+                {"property": "Date", "date": {"equals": scoreboard_date}},
+                {
+                    "or": [
+                        {"property": "Result", "select": {"equals": "Win"}},
+                        {"property": "Result", "select": {"equals": "Loss"}},
+                        {"property": "Result", "select": {"equals": "Push"}},
+                    ]
+                },
+            ]
+        }
+        prior_pages = query_picks_db(already_resolved_filter)
+        if prior_pages and "error" not in prior_pages[0]:
+            for page in prior_pages:
+                yesterday_resolved.append({
+                    "date": extract_prop(page, "Date") or scoreboard_date,
+                    "bet_type": extract_prop(page, "Bet Type") or "Game Pick",
+                    "bet": extract_prop(page, "Pick") or "",
+                    "result": extract_prop(page, "Result") or "Pending",
+                })
 
     def _find_by_type(bt):
         return next((r for r in yesterday_resolved if r["bet_type"] == bt), None)
@@ -467,6 +496,7 @@ def get_performance_summary(days: int = 30) -> dict:
         odds = extract_prop(page, "Odds")
         sp_rating = extract_prop(page, "SP Matchup Rating")
         notes = extract_prop(page, "Notes")
+        pick_desc = extract_prop(page, "Pick")
 
         picks.append({
             "result": result,
@@ -475,6 +505,7 @@ def get_performance_summary(days: int = 30) -> dict:
             "odds": odds,
             "sp_rating": sp_rating,
             "notes": notes or "",
+            "pick": pick_desc or "",
         })
 
     def win_rate(subset):
@@ -508,9 +539,16 @@ def get_performance_summary(days: int = 30) -> dict:
         if subset:
             by_sp[rating] = win_rate(subset)
 
+    # By bet subtype (ML vs RL vs Totals)
+    by_subtype = {}
+    for label, pattern in [("ML", "ML"), ("RL-1.5", "-1.5"), ("RL+1.5", "+1.5"), ("Over", "OVER"), ("Under", "UNDER")]:
+        subset = [p for p in picks if pattern.upper() in (p.get("pick") or "").upper()]
+        if subset:
+            by_subtype[label] = win_rate(subset)
+
     # Pattern detection: flag any segment >10 picks with win% deviation
     patterns = []
-    for label, stats in {**by_type, **by_confidence, **by_sp}.items():
+    for label, stats in {**by_type, **by_confidence, **by_sp, **by_subtype}.items():
         if stats["total"] >= 10:
             pct = stats["win_pct"]
             if pct >= 65:
@@ -538,6 +576,7 @@ def get_performance_summary(days: int = 30) -> dict:
         "by_bet_type": by_type,
         "by_confidence_bucket": by_confidence,
         "by_sp_matchup": by_sp,
+        "by_bet_subtype": by_subtype,
         "roi_units": round(total_return, 2),
         "patterns_detected": patterns,
         "calibration_note": (

@@ -124,8 +124,8 @@ async function queryPendingPicks(extraFilter?: object): Promise<PendingPickWithD
         pageId: page.id,
         date: props["Date"]?.date?.start ?? "",
         matchup: props["Matchup"]?.title?.[0]?.plain_text ?? "",
-        pick: props["Pick"]?.rich_text?.[0]?.plain_text ?? "",
-        betType: props["Bet Type"]?.select?.name ?? "",
+        pick: props["Pick"]?.rich_text?.[0]?.plain_text ?? props["Pick"]?.title?.[0]?.plain_text ?? "",
+        betType: props["Bet Type"]?.select?.name ?? props["Bet Type"]?.multi_select?.[0]?.name ?? "",
         odds: props["Odds"]?.number ?? 0,
         gameId: props["GameID"]?.number ?? 0,
       });
@@ -145,6 +145,42 @@ export async function getAllPendingPicks(): Promise<PendingPickWithDate[]> {
 /** @deprecated Use getAllPendingPicks() to sweep the full backlog. */
 export async function getYesterdayPendingPicks(yesterday: string): Promise<PendingPickWithDate[]> {
   return queryPendingPicks({ property: "Date", date: { equals: yesterday } });
+}
+
+/** Fetch already-resolved picks for a specific date (Win/Loss/Push).
+ *  Uses on_or_after + on_or_before instead of equals — more reliable across SDK versions.
+ */
+export async function getResolvedPicksByDate(dateStr: string): Promise<Array<{ pick: string; betType: string; result: "Win" | "Loss" | "Push" }>> {
+  const notion = getClient();
+  const picks: Array<{ pick: string; betType: string; result: "Win" | "Loss" | "Push" }> = [];
+  let cursor: string | undefined;
+  do {
+    const res = await notion.dataSources.query({
+      data_source_id: picksDsId(),
+      start_cursor: cursor,
+      filter: {
+        and: [
+          { property: "Date", date: { on_or_after: dateStr } },
+          { property: "Date", date: { on_or_before: dateStr } },
+          { or: [
+            { property: "Result", select: { equals: "Win" } },
+            { property: "Result", select: { equals: "Loss" } },
+            { property: "Result", select: { equals: "Push" } },
+          ]},
+        ],
+      },
+    } as any);
+    for (const page of res.results) {
+      if (page.object !== "page") continue;
+      const props = (page as any).properties;
+      const betType = props["Bet Type"]?.select?.name ?? props["Bet Type"]?.multi_select?.[0]?.name ?? "";
+      const pick = props["Pick"]?.rich_text?.[0]?.plain_text ?? props["Pick"]?.title?.[0]?.plain_text ?? "";
+      const result = props["Result"]?.select?.name as "Win" | "Loss" | "Push";
+      picks.push({ pick, betType, result });
+    }
+    cursor = res.has_more ? (res.next_cursor ?? undefined) : undefined;
+  } while (cursor);
+  return picks;
 }
 
 export async function updatePickResult(pageId: string, result: "Win" | "Loss" | "Push"): Promise<void> {

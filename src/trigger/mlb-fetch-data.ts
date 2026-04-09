@@ -4,9 +4,33 @@
 import { task } from "@trigger.dev/sdk/v3";
 import {
   fetchSchedule, fetchPitcherStats, fetchStandings, fetchWeather,
+  fetchAllTeamOffenseStats, fetchAllTeamPitchingStats,
   type ScheduledGame, type PitcherStats, type TeamRecord, type WeatherData,
+  type TeamOffenseStats, type TeamPitchingStats,
 } from "../lib/mlb-api.js";
 import { fetchBatchedWebData, type TavilyResults } from "../lib/tavily.js";
+
+export interface TotalsContext {
+  homeRpg: number | null;
+  awayRpg: number | null;
+  rawExpectedTotal: number | null;
+  spAdjustment: number;
+  parkAdjustment: number;
+  weatherAdjustment: number;
+  expectedTotal: number | null;
+  lean: "compare_to_posted_line";
+  offenseContext: {
+    homeObp: number | null;
+    awayObp: number | null;
+    homeOps: number | null;
+    awayOps: number | null;
+    homeKPct: number | null;
+    awayKPct: number | null;
+    homeBullpenEra: number | null;
+    awayBullpenEra: number | null;
+  };
+  notes: string[];
+}
 
 export interface CompiledGame {
   gameId: number;
@@ -18,9 +42,14 @@ export interface CompiledGame {
   seriesGameNumber: number;
   homeTeam: TeamRecord | null;
   awayTeam: TeamRecord | null;
+  homeOffense: TeamOffenseStats | null;
+  awayOffense: TeamOffenseStats | null;
+  homePitching: TeamPitchingStats | null;
+  awayPitching: TeamPitchingStats | null;
   homePitcher: PitcherStats | null;
   awayPitcher: PitcherStats | null;
   weather: WeatherData | null;
+  totalsContext: TotalsContext | null;
 }
 
 export interface FetchDataPayload {
@@ -82,7 +111,20 @@ export const mlbFetchDataTask = task({
     await Promise.all(pitcherFetches);
     console.log(`[fetch-data] Pitcher stats loaded for ${pitcherMap.size}/${pitcherIds.size} pitchers`);
 
-    // 4. Weather (parallel per venue, skip domes)
+    // 4. Team offense + pitching stats (2 bulk calls for all teams)
+    let teamOffenseMap = new Map<number, TeamOffenseStats>();
+    let teamPitchingMap = new Map<number, TeamPitchingStats>();
+    try {
+      [teamOffenseMap, teamPitchingMap] = await Promise.all([
+        fetchAllTeamOffenseStats(season),
+        fetchAllTeamPitchingStats(season),
+      ]);
+      console.log(`[fetch-data] Team stats loaded: ${teamOffenseMap.size} offense, ${teamPitchingMap.size} pitching`);
+    } catch (err) {
+      dataNotes.push(`Team stats unavailable: ${String(err)}`);
+    }
+
+    // 5. Weather (parallel per venue, skip domes)
     const weatherMap = new Map<number, WeatherData | null>();
     const weatherFetches = schedule.map(async (g) => {
       if (g.isDome || !g.lat || !g.lon) {
@@ -98,7 +140,7 @@ export const mlbFetchDataTask = task({
     });
     await Promise.all(weatherFetches);
 
-    // 5. Tavily batched searches
+    // 6. Tavily batched searches
     let tavilyResults: TavilyResults = { odds: "", lineups: "", injuries: "", lineMovement: "" };
     try {
       tavilyResults = await fetchBatchedWebData(date);
@@ -106,23 +148,125 @@ export const mlbFetchDataTask = task({
       dataNotes.push(`Tavily search failed: ${String(err)} — odds/lineup/injury data unavailable`);
     }
 
-    // 6. Compile games
-    const games: CompiledGame[] = schedule.map((g) => ({
-      gameId: g.gameId,
-      matchup: `${g.awayTeamAbbr} @ ${g.homeTeamAbbr}`,
-      venue: g.venue,
-      parkFactor: g.parkFactor,
-      isDome: g.isDome,
-      gameTimeUtc: g.gameTimeUtc,
-      seriesGameNumber: g.seriesGameNumber,
-      homeTeam: standingsMap.get(g.homeTeamId) ?? null,
-      awayTeam: standingsMap.get(g.awayTeamId) ?? null,
-      homePitcher: g.homePitcherId ? (pitcherMap.get(g.homePitcherId) ?? null) : null,
-      awayPitcher: g.awayPitcherId ? (pitcherMap.get(g.awayPitcherId) ?? null) : null,
-      weather: weatherMap.get(g.gameId) ?? null,
-    }));
+    // 7. Compile games
+    const games: CompiledGame[] = schedule.map((g) => {
+      const homeOffense = teamOffenseMap.get(g.homeTeamId) ?? null;
+      const awayOffense = teamOffenseMap.get(g.awayTeamId) ?? null;
+      const homePitching = teamPitchingMap.get(g.homeTeamId) ?? null;
+      const awayPitching = teamPitchingMap.get(g.awayTeamId) ?? null;
+      const homePitcher = g.homePitcherId ? (pitcherMap.get(g.homePitcherId) ?? null) : null;
+      const awayPitcher = g.awayPitcherId ? (pitcherMap.get(g.awayPitcherId) ?? null) : null;
+      const weather = weatherMap.get(g.gameId) ?? null;
+
+      return {
+        gameId: g.gameId,
+        matchup: `${g.awayTeamAbbr} @ ${g.homeTeamAbbr}`,
+        venue: g.venue,
+        parkFactor: g.parkFactor,
+        isDome: g.isDome,
+        gameTimeUtc: g.gameTimeUtc,
+        seriesGameNumber: g.seriesGameNumber,
+        homeTeam: standingsMap.get(g.homeTeamId) ?? null,
+        awayTeam: standingsMap.get(g.awayTeamId) ?? null,
+        homeOffense,
+        awayOffense,
+        homePitching,
+        awayPitching,
+        homePitcher,
+        awayPitcher,
+        weather,
+        totalsContext: computeTotalsContext({
+          homeOffense, awayOffense, homePitching, awayPitching,
+          homePitcher, awayPitcher, parkFactor: g.parkFactor,
+          isDome: g.isDome, weather,
+          homeAbbr: g.homeTeamAbbr, awayAbbr: g.awayTeamAbbr,
+        }),
+      };
+    });
 
     console.log(`[fetch-data] Compiled ${games.length} games. Data notes: ${dataNotes.length}`);
     return { date, games, tavilyResults, dataNotes };
   },
 });
+
+// ─── Pre-compute expected run total for a game ───────────────────────────────
+
+function computeTotalsContext(args: {
+  homeOffense: TeamOffenseStats | null;
+  awayOffense: TeamOffenseStats | null;
+  homePitching: TeamPitchingStats | null;
+  awayPitching: TeamPitchingStats | null;
+  homePitcher: PitcherStats | null;
+  awayPitcher: PitcherStats | null;
+  parkFactor: number;
+  isDome: boolean;
+  weather: WeatherData | null;
+  homeAbbr: string;
+  awayAbbr: string;
+}): TotalsContext | null {
+  const { homeOffense, awayOffense, homePitcher, awayPitcher, parkFactor, isDome, weather, homeAbbr, awayAbbr } = args;
+
+  if (!homeOffense || !awayOffense) return null;
+
+  const notes: string[] = [];
+
+  // Step 1: Offensive baseline
+  const homeRpg = homeOffense.runsPerGame;
+  const awayRpg = awayOffense.runsPerGame;
+  const rawTotal = homeRpg + awayRpg;
+  notes.push(`Offensive baseline: ${homeAbbr} ${homeRpg} R/G + ${awayAbbr} ${awayRpg} R/G = ${Math.round(rawTotal * 100) / 100} raw`);
+
+  // Step 2: SP ERA/K9 suppression
+  let spAdj = 0;
+  for (const [sp, side] of [[homePitcher, homeAbbr], [awayPitcher, awayAbbr]] as const) {
+    if (!sp) continue;
+    const spNotes: string[] = [];
+    if (sp.era !== null && sp.era < 3.50) { spAdj -= 0.4; spNotes.push(`ERA ${sp.era} (<3.50, -0.4)`); }
+    if (sp.k9 !== null && sp.k9 > 9.5)   { spAdj -= 0.3; spNotes.push(`K/9 ${sp.k9} (>9.5, -0.3)`); }
+    if (spNotes.length) notes.push(`${sp.name ?? side + " SP"}: ${spNotes.join(", ")}`);
+  }
+  spAdj = Math.round(spAdj * 100) / 100;
+
+  // Step 3: Park factor
+  let parkAdj = 0;
+  if (parkFactor >= 115)      { parkAdj = 1.75;  notes.push(`Park ${parkFactor} (extreme hitter, +1.75)`); }
+  else if (parkFactor >= 105) { parkAdj = 0.5;   notes.push(`Park ${parkFactor} (hitter-friendly, +0.5)`); }
+  else if (parkFactor <= 94)  { parkAdj = -0.75; notes.push(`Park ${parkFactor} (strong pitcher-friendly, -0.75)`); }
+  else if (parkFactor <= 97)  { parkAdj = -0.5;  notes.push(`Park ${parkFactor} (pitcher-friendly, -0.5)`); }
+
+  // Step 4: Weather
+  let weatherAdj = 0;
+  if (isDome) {
+    notes.push("Dome — weather neutral");
+  } else if (weather) {
+    if (weather.windEffect === "strong_wind_blowing_out") { weatherAdj += 0.75; notes.push("Wind blowing out (+0.75)"); }
+    else if (weather.windEffect === "strong_wind_blowing_in") { weatherAdj -= 0.75; notes.push("Wind blowing in (-0.75)"); }
+    if (weather.tempF < 50) { weatherAdj -= 0.5; notes.push(`Cold (${weather.tempF}°F, -0.5)`); }
+    else if (weather.tempF > 80) { weatherAdj += 0.25; notes.push(`Hot (${weather.tempF}°F, +0.25)`); }
+  }
+  weatherAdj = Math.round(weatherAdj * 100) / 100;
+
+  const expectedTotal = Math.round((rawTotal + spAdj + parkAdj + weatherAdj) * 100) / 100;
+
+  return {
+    homeRpg,
+    awayRpg,
+    rawExpectedTotal: Math.round(rawTotal * 100) / 100,
+    spAdjustment: spAdj,
+    parkAdjustment: parkAdj,
+    weatherAdjustment: weatherAdj,
+    expectedTotal,
+    lean: "compare_to_posted_line",
+    offenseContext: {
+      homeObp: homeOffense.obp,
+      awayObp: awayOffense.obp,
+      homeOps: homeOffense.ops,
+      awayOps: awayOffense.ops,
+      homeKPct: homeOffense.kPct,
+      awayKPct: awayOffense.kPct,
+      homeBullpenEra: args.homePitching?.bullpenEra ?? null,
+      awayBullpenEra: args.awayPitching?.bullpenEra ?? null,
+    },
+    notes,
+  };
+}

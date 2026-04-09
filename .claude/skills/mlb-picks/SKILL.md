@@ -27,19 +27,19 @@ Before making today's picks, resolve and display yesterday's outcomes.
    - `scoreboard.top_3` → wins/losses/pushes/win_pct
    - `scoreboard.running_30_day` → wins/losses/win_pct/roi_units
    - `scoreboard.all_time` → wins/losses/pushes/win_pct/roi_units
-3. **Output the Daily Scorecard** (include this at the top of the Notion report AND print to terminal):
+3. **Output the Daily Scorecard** as a markdown table (include this at the top of the Notion report AND print to terminal):
 
 ```
-YESTERDAY'S SCORECARD — [scoreboard.date]
-==========================================
-Bet of the Day:    [scoreboard.bet_of_day.pick] → [scoreboard.bet_of_day.result]
-Underdog of Day:   [scoreboard.underdog_of_day.pick] → [scoreboard.underdog_of_day.result]
-Top 3:             [top_3.wins]-[top_3.losses]-[top_3.pushes] ([top_3.win_pct]%)
-30-Day Running:    [running_30_day.wins]-[running_30_day.losses] | [running_30_day.win_pct]% | [+/-X units]
-OVERALL (Season):  [all_time.wins]-[all_time.losses]-[all_time.pushes] | [all_time.win_pct]% | [all_time.roi_units] units ROI
+| Category | Pick | Result |
+|---|---|---|
+| Bet of the Day | [scoreboard.bet_of_day.pick] | [scoreboard.bet_of_day.result] |
+| Underdog of Day | [scoreboard.underdog_of_day.pick] | [scoreboard.underdog_of_day.result] |
+| Top 3 | — | [top_3.wins]-[top_3.losses]-[top_3.pushes] ([top_3.win_pct]%) |
+| 30-Day Running | — | [running_30_day.wins]-[running_30_day.losses] ([running_30_day.win_pct]%) · ROI: [+/-X] units |
+| **Overall (Season)** | — | **[all_time.wins]-[all_time.losses]-[all_time.pushes] ([all_time.win_pct]%) · [all_time.roi_units] units** |
 ```
 
-If `scoreboard` is missing or `updated == 0`, output: "No picks yesterday — off day."
+If `scoreboard` is missing, or if `scoreboard.yesterday_overall` has 0 total picks (wins + losses + pushes == 0), output: "No picks yesterday — off day."
 
 ---
 
@@ -52,14 +52,16 @@ This runs the full calibration loop: queries Notion, computes adjustments, write
 Read the JSON output. Extract and hold these values for use in Step 5:
 - `by_bucket` — per-confidence-bucket adjustment (e.g. `{"80-95": {"adjustment": -15, ...}}`)
 - `by_bet_type` — per-bet-type adjustment (e.g. `{"Bet of Day": {"adjustment": -8, ...}}`)
+- `by_bet_subtype` — per-mechanics adjustment: `{"Over": {"adjustment": -5, "win_pct": 38.0, ...}, "Under": {...}, "ML": {...}}`
 - `global_adjustment` — fallback when a bucket has insufficient data
 - `max_combined_adjustment` — cap on total calibration applied to any one pick
 - `narrative` — paste this into the Performance Context section of the Notion report
 
 Also note:
 - Overall W-L and ROI
-- Win rate by bet type and confidence bucket
 - Any structural patterns flagged (`patterns` field)
+
+**Totals calibration rule:** Use `by_bet_subtype.Over.adjustment` and `by_bet_subtype.Under.adjustment` directly as additional deltas on totals picks (stacks with bucket + type adj, subject to `max_combined_adjustment` cap). If `by_bet_subtype.Over.win_pct` < 45% with 5+ sample, only recommend OVER when P6 strongly supports it (temp >80°F, wind out >12 mph, or Coors Field). If `by_bet_subtype.Under.win_pct` > 60%, apply an extra +3 confidence boost on top of the subtype adj. If combined over+under win rate is below 45%, require 68% minimum confidence for any totals bet. Over/Under bets are fully eligible for Bet of Day and Top 3.
 
 ---
 

@@ -8,7 +8,7 @@ import { mlbFetchDataTask } from "./mlb-fetch-data.js";
 import { mlbAnalyzeTask } from "./mlb-analyze.js";
 import {
   getAllPendingPicks, updatePickResult, getRunningRecord, getAllTimeRecord,
-  getRecentPicksDetail, updateDailyReportResults,
+  getRecentPicksDetail, updateDailyReportResults, getResolvedPicksByDate,
   type PickDetail,
 } from "../lib/notion.js";
 import { fetchFinalScores } from "../lib/mlb-api.js";
@@ -65,58 +65,77 @@ export const mlbOrchestratorTask = schedules.task({
           allResolved.push({ date: pick.date, pick: pick.pick, betType: pick.betType, result });
           console.log(`  [${pick.date}] ${pick.matchup} — ${pick.pick} → ${result}`);
         }
+      }
 
-        // Scoreboard uses only yesterday's resolved picks
-        const ydResolved = allResolved.filter(r => r.date === yesterdayDate);
+      // Scoreboard uses yesterday's resolved picks — from this run or already resolved
+      let ydResolved = allResolved.filter(r => r.date === yesterdayDate);
+      if (ydResolved.length === 0) {
+        console.log(`  No pending picks resolved for ${yesterdayDate} — checking already-resolved...`);
+        const prior = await getResolvedPicksByDate(yesterdayDate);
+        ydResolved = prior.map(p => ({ date: yesterdayDate, pick: p.pick, betType: p.betType, result: p.result }));
+        console.log(`  Found ${ydResolved.length} already-resolved picks for ${yesterdayDate}`);
+        if (ydResolved.length > 0) {
+          console.log(`  BetTypes found: ${ydResolved.map(r => `"${r.betType}"`).join(", ")}`);
+        }
+      }
 
-        const botd = ydResolved.find(r => r.betType === "Bet of Day");
-        const uotd = ydResolved.find(r => r.betType === "Underdog");
-        const top3 = ydResolved.filter(r => r.betType === "Top 3");
+      if (ydResolved.length > 0) {
+        // Normalize betType to handle minor variations (e.g. "Bet of the Day" vs "Bet of Day")
+        const normalizeBetType = (bt: string): string => {
+          const t = bt.trim().toLowerCase();
+          if (t === "bet of day" || t === "bet of the day" || t === "botd" || t === "best bet") return "Bet of Day";
+          if (t === "underdog" || t === "underdog of day" || t === "uotd") return "Underdog";
+          if (t === "top 3" || t === "top3" || t === "top pick") return "Top 3";
+          return bt;
+        };
+        const normalized = ydResolved.map(r => ({ ...r, betType: normalizeBetType(r.betType) }));
+
+        const botd = normalized.find(r => r.betType === "Bet of Day");
+        const uotd = normalized.find(r => r.betType === "Underdog");
+        const top3 = normalized.filter(r => r.betType === "Top 3");
+        console.log(`  BOTD: ${botd?.pick ?? "none"} | UOTD: ${uotd?.pick ?? "none"} | Top3: ${top3.length} picks`);
         const top3W = top3.filter(r => r.result === "Win").length;
         const top3L = top3.filter(r => r.result === "Loss").length;
         const top3P = top3.filter(r => r.result === "Push").length;
         const top3WinPct = (top3W + top3L) > 0
           ? Math.round(top3W / (top3W + top3L) * 1000) / 10 : 0;
 
-        // Update yesterday's Daily Report properties
-        if (ydResolved.length > 0) {
-          const ydW = ydResolved.filter(r => r.result === "Win").length;
-          const ydL = ydResolved.filter(r => r.result === "Loss").length;
-          const ydP = ydResolved.filter(r => r.result === "Push").length;
-          try {
-            await updateDailyReportResults(
-              yesterdayDate,
-              botd?.result ?? "N/A",
-              uotd?.result ?? "N/A",
-              `${top3W}-${top3L}-${top3P}`
-            );
-          } catch (err) {
-            console.warn(`  Could not update yesterday's report page: ${err}`);
-          }
-
-          // Fetch running records AFTER resolution so counts are current
-          const [runningRecord30, allTime] = await Promise.all([
-            getRunningRecord(30),
-            getAllTimeRecord(),
-          ]);
-          const rrWinPct = (runningRecord30.wins + runningRecord30.losses) > 0
-            ? Math.round(runningRecord30.wins / (runningRecord30.wins + runningRecord30.losses) * 1000) / 10 : 0;
-          const atWinPct = (allTime.wins + allTime.losses) > 0
-            ? Math.round(allTime.wins / (allTime.wins + allTime.losses) * 1000) / 10 : 0;
-          const sign = (n: number) => n >= 0 ? `+${n}` : `${n}`;
-
-          yesterdayScorecardText = [
-            `| Category | Pick | Result |`,
-            `|---|---|---|`,
-            `| Bet of the Day | ${botd?.pick ?? "—"} | ${botd?.result ?? "No pick"} |`,
-            `| Underdog of Day | ${uotd?.pick ?? "—"} | ${uotd?.result ?? "No pick"} |`,
-            `| Top 3 | — | ${top3W}-${top3L}-${top3P} (${top3WinPct}%) |`,
-            `| 30-Day Running | — | ${runningRecord30.wins}-${runningRecord30.losses} (${rrWinPct}%) · ROI: ${sign(runningRecord30.roiUnits)} units |`,
-            `| **Overall (Season)** | — | **${allTime.wins}-${allTime.losses}-${allTime.pushes} (${atWinPct}%) · ${sign(allTime.roiUnits)} units** |`,
-          ].join("\n");
-
-          console.log(`  Yesterday: ${ydW}W-${ydL}L-${ydP}P | 30-day: ${runningRecord30.wins}-${runningRecord30.losses} | All-time: ${allTime.wins}-${allTime.losses}`);
+        const ydW = normalized.filter(r => r.result === "Win").length;
+        const ydL = normalized.filter(r => r.result === "Loss").length;
+        const ydP = normalized.filter(r => r.result === "Push").length;
+        try {
+          await updateDailyReportResults(
+            yesterdayDate,
+            botd?.result ?? "N/A",
+            uotd?.result ?? "N/A",
+            `${top3W}-${top3L}-${top3P}`
+          );
+        } catch (err) {
+          console.warn(`  Could not update yesterday's report page: ${err}`);
         }
+
+        // Fetch running records AFTER resolution so counts are current
+        const [runningRecord30, allTime] = await Promise.all([
+          getRunningRecord(30),
+          getAllTimeRecord(),
+        ]);
+        const rrWinPct = (runningRecord30.wins + runningRecord30.losses) > 0
+          ? Math.round(runningRecord30.wins / (runningRecord30.wins + runningRecord30.losses) * 1000) / 10 : 0;
+        const atWinPct = (allTime.wins + allTime.losses) > 0
+          ? Math.round(allTime.wins / (allTime.wins + allTime.losses) * 1000) / 10 : 0;
+        const sign = (n: number) => n >= 0 ? `+${n}` : `${n}`;
+
+        yesterdayScorecardText = [
+          `| Category | Pick | Result |`,
+          `|---|---|---|`,
+          `| Bet of the Day | ${botd?.pick ?? "—"} | ${botd?.result ?? "No pick"} |`,
+          `| Underdog of Day | ${uotd?.pick ?? "—"} | ${uotd?.result ?? "No pick"} |`,
+          `| Top 3 | — | ${top3W}-${top3L}-${top3P} (${top3WinPct}%) |`,
+          `| 30-Day Running | — | ${runningRecord30.wins}-${runningRecord30.losses} (${rrWinPct}%) · ROI: ${sign(runningRecord30.roiUnits)} units |`,
+          `| **Overall (Season)** | — | **${allTime.wins}-${allTime.losses}-${allTime.pushes} (${atWinPct}%) · ${sign(allTime.roiUnits)} units** |`,
+        ].join("\n");
+
+        console.log(`  Yesterday: ${ydW}W-${ydL}L-${ydP}P | 30-day: ${runningRecord30.wins}-${runningRecord30.losses} | All-time: ${allTime.wins}-${allTime.losses}`);
       }
     } catch (err) {
       console.error(`  Scoring step failed: ${err}`);
@@ -274,22 +293,28 @@ function resolvePick(
   const theirScore = useHome ? awayScore : homeScore;
   const totalScore = homeScore + awayScore;
 
-  // Over/Under
-  if (desc.includes("over ")) {
-    const line = parseFloat(desc.split("over ")[1]?.trim().split(/\s/)[0] ?? "0");
+  // Over/Under — use regex to find the number regardless of surrounding formatting
+  const overMatch = desc.match(/\bover\b[\s(]*(\d+\.?\d*)/);
+  const underMatch = desc.match(/\bunder\b[\s(]*(\d+\.?\d*)/);
+
+  if (overMatch) {
+    const line = parseFloat(overMatch[1] ?? "0");
     if (!isNaN(line)) {
       if (totalScore > line) return "Win";
       if (totalScore < line) return "Loss";
       return "Push";
     }
+    // "over" found but line couldn't parse — don't fall through to moneyline
+    return "Loss";
   }
-  if (desc.includes("under ")) {
-    const line = parseFloat(desc.split("under ")[1]?.trim().split(/\s/)[0] ?? "0");
+  if (underMatch) {
+    const line = parseFloat(underMatch[1] ?? "0");
     if (!isNaN(line)) {
       if (totalScore < line) return "Win";
       if (totalScore > line) return "Loss";
       return "Push";
     }
+    return "Loss";
   }
 
   // Run line -1.5

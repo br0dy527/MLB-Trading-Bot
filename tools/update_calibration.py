@@ -82,6 +82,7 @@ def fetch_raw_picks(days: int) -> list:
             "odds":       extract_prop(page, "Odds"),
             "sp_rating":  extract_prop(page, "SP Matchup Rating"),
             "date":       extract_prop(page, "Date"),
+            "pick":       extract_prop(page, "Pick") or "",
         })
     return picks
 
@@ -230,6 +231,33 @@ def compute_adjustments(days: int = 30) -> dict:
             "sample": wr["total"],
         }
 
+    # --- Bet subtype performance (ML vs RL vs Over vs Under) ---
+    subtype_data = {}
+    subtype_patterns = [
+        ("ML",     lambda p: "ML" in p.get("pick", "").upper() and "OVER" not in p.get("pick", "").upper() and "UNDER" not in p.get("pick", "").upper()),
+        ("RL-1.5", lambda p: "-1.5" in p.get("pick", "")),
+        ("RL+1.5", lambda p: "+1.5" in p.get("pick", "")),
+        ("Over",   lambda p: bool(__import__("re").search(r"\bover\b", p.get("pick", ""), __import__("re").IGNORECASE))),
+        ("Under",  lambda p: bool(__import__("re").search(r"\bunder\b", p.get("pick", ""), __import__("re").IGNORECASE))),
+    ]
+    for label, matcher in subtype_patterns:
+        subset = [p for p in raw_picks if matcher(p)]
+        wr = win_rate(subset)
+        roi = roi_for(subset)
+        adj = type_adjustment(wr["win_pct"], wr["total"])
+        subtype_data[label] = {
+            "record": f"{wr['wins']}-{wr['losses']}",
+            "win_pct": wr["win_pct"],
+            "sample": wr["total"],
+            "roi_units": roi,
+            "adjustment": adj,
+            "note": (
+                f"Insufficient data ({wr['total']} picks, need {MIN_SAMPLE_TYPE})"
+                if wr["total"] < MIN_SAMPLE_TYPE
+                else f"Win rate {wr['win_pct']}% vs 52% break-even"
+            ),
+        }
+
     # --- Global fallback ---
     g_adj = global_adjustment(overall["win_pct"], overall["total"])
 
@@ -247,10 +275,11 @@ def compute_adjustments(days: int = 30) -> dict:
         "by_bucket": bucket_data,
         "by_bet_type": type_data,
         "by_sp_rating": sp_data,
+        "by_bet_subtype": subtype_data,
         "global_adjustment": g_adj,
         "max_combined_adjustment": -25.0,
         "patterns": perf.get("patterns_detected", []),
-        "narrative": _build_narrative(overall, bucket_data, type_data, g_adj),
+        "narrative": _build_narrative(overall, bucket_data, type_data, g_adj, subtype_data),
         "how_to_apply": (
             "After computing base_confidence + qualitative adjustments: "
             "(1) Look up by_bucket[confidence_bucket]['adjustment']. "
@@ -263,7 +292,7 @@ def compute_adjustments(days: int = 30) -> dict:
     }
 
 
-def _build_narrative(overall, buckets, types, g_adj) -> str:
+def _build_narrative(overall, buckets, types, g_adj, subtypes=None) -> str:
     lines = [
         f"Overall last {overall['wins']+overall['losses']} resolved picks: "
         f"{overall['wins']}-{overall['losses']} ({overall['win_pct']}% win rate)."
@@ -294,6 +323,23 @@ def _build_narrative(overall, buckets, types, g_adj) -> str:
                 f"{bt} picks are underperforming at {data['win_pct']}% win rate "
                 f"(adjustment: {data['adjustment']:+.0f})."
             )
+
+    # Totals subtype callout
+    if subtypes:
+        for label in ["Over", "Under"]:
+            d = subtypes.get(label, {})
+            if d.get("sample", 0) >= MIN_SAMPLE_TYPE:
+                adj = d.get("adjustment", 0)
+                if adj <= -5:
+                    lines.append(
+                        f"{label} bets underperforming at {d['win_pct']}% win rate "
+                        f"({d['record']}, adj: {adj:+.0f})."
+                    )
+                elif adj >= 3:
+                    lines.append(
+                        f"{label} bets outperforming at {d['win_pct']}% win rate "
+                        f"({d['record']}, adj: {adj:+.0f})."
+                    )
 
     if g_adj < -2:
         lines.append(f"Global fallback adjustment: {g_adj:+.1f} pts.")
@@ -359,6 +405,20 @@ def update_rubric_file(adjustments: dict) -> bool:
     type_table = "\n".join(type_rows)
 
     content = _replace_section(content, "AUTO:TYPE_TABLE", type_table)
+
+    # --- Bet subtype table ---
+    subtype_rows = ["| Subtype | Record | Win% | ROI (units) | Adjustment |",
+                    "|---|---|---|---|---|"]
+    for label in ["ML", "RL-1.5", "RL+1.5", "Over", "Under"]:
+        d = adjustments.get("by_bet_subtype", {}).get(label, {})
+        record = d.get("record", "—")
+        win_pct = f"{d['win_pct']}%" if d.get("win_pct") is not None else "—"
+        roi = d.get("roi_units", "—")
+        adj = d.get("adjustment", 0)
+        adj_str = f"{adj:+.0f}" if adj != 0 else "0"
+        subtype_rows.append(f"| {label} | {record} | {win_pct} | {roi} | {adj_str} |")
+    subtype_table = "\n".join(subtype_rows)
+    content = _replace_section(content, "AUTO:SUBTYPE_TABLE", subtype_table)
 
     # --- Last updated block ---
     today = adjustments["last_updated"]
