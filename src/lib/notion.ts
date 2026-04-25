@@ -352,6 +352,19 @@ export async function updateDailyReportResults(
   const pageId = res.results[0]?.id;
   if (!pageId) return;
 
+  await applyDailyReportResults(pageId, botdResult, uotdResult, top3Record);
+}
+
+/** Patch a specific Daily Report page directly. Used by the backfill so that
+ *  every duplicate page for a given date gets updated, not just the first
+ *  match returned by a title-based query. */
+export async function applyDailyReportResults(
+  pageId: string,
+  botdResult: string,
+  uotdResult: string,
+  top3Record: string,
+): Promise<void> {
+  const notion = getClient();
   await notion.pages.update({
     page_id: pageId,
     properties: {

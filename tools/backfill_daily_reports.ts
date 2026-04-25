@@ -25,7 +25,7 @@ for (const line of envLines) {
 const {
   listDailyReports,
   getResolvedPicksByDate,
-  updateDailyReportResults,
+  applyDailyReportResults,
 } = await import("../src/lib/notion.js");
 
 function normalizeBetType(bt: string): string {
@@ -76,7 +76,9 @@ async function main() {
 
     if (apply) {
       try {
-        await updateDailyReportResults(r.date, botdResult, uotdResult, top3Record);
+        // Patch this specific page (not just the first match for the date) so
+        // every duplicate Daily Report gets the same update.
+        await applyDailyReportResults(r.pageId, botdResult, uotdResult, top3Record);
         updated++;
       } catch (err) {
         console.warn(`    UPDATE FAILED: ${err}`);
