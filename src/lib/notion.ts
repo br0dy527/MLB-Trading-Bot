@@ -441,10 +441,15 @@ export async function getDailyReportSummary(date: string): Promise<{
   };
 }
 
-/** List every Daily Report page with its title for backfill. */
-export async function listDailyReports(): Promise<Array<{ pageId: string; title: string; date: string | null }>> {
+/** List every Daily Report page with its title and created time. */
+export async function listDailyReports(): Promise<Array<{
+  pageId: string;
+  title: string;
+  date: string | null;
+  createdTime: string;
+}>> {
   const notion = getClient();
-  const out: Array<{ pageId: string; title: string; date: string | null }> = [];
+  const out: Array<{ pageId: string; title: string; date: string | null; createdTime: string }> = [];
   let cursor: string | undefined;
   do {
     const res = await notion.dataSources.query({
@@ -455,11 +460,18 @@ export async function listDailyReports(): Promise<Array<{ pageId: string; title:
       if (page.object !== "page") continue;
       const props = (page as any).properties;
       const title = props["Date"]?.title?.[0]?.plain_text ?? "";
-      out.push({ pageId: page.id, title, date: parseReportTitleDate(title) });
+      const createdTime = (page as any).created_time ?? "";
+      out.push({ pageId: page.id, title, date: parseReportTitleDate(title), createdTime });
     }
     cursor = res.has_more ? (res.next_cursor ?? undefined) : undefined;
   } while (cursor);
   return out;
+}
+
+/** Archive a Daily Report page (soft-delete in Notion). */
+export async function archiveDailyReport(pageId: string): Promise<void> {
+  const notion = getClient();
+  await notion.pages.update({ page_id: pageId, archived: true } as any);
 }
 
 // ─── Create today's Daily Report page ────────────────────────────────────────
