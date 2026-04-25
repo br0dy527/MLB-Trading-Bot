@@ -3,8 +3,8 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "npx trigger.dev@latest dev",
-    "deploy": "npx trigger.dev@latest deploy"
+    "dev": "npx trigger.dev@4.4.3 dev",
+    "deploy": "npx trigger.dev@4.4.3 deploy"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.82.0",
