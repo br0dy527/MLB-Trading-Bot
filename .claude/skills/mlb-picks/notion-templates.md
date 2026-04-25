@@ -185,7 +185,7 @@ For every pick (Bet of Day, Underdog, Top 3, and all game picks), create a row i
   "Matchup": "[Away Abbr] @ [Home Abbr]",
   "date:Date:start": "YYYY-MM-DD",
   "Pick": "[Team] [Bet Type] ([Odds])",
-  "Bet Type": "[Bet of Day | Underdog | Top 3 | Game Pick]",
+  "Bet Type": ["Bet of Day", "Top 3"],   // multi-select — every applicable tag. A pick can be both BOTD and Top 3, or both Underdog and Top 3. Use ["Game Pick"] only if no featured category applies.
   "Odds": [integer American odds, e.g. -108 or 145],
   "Implied Prob %": [float, e.g. 51.9],
   "Confidence": [integer 0-100],

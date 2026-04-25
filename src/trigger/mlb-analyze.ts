@@ -4,7 +4,7 @@
 import { task } from "@trigger.dev/sdk/v3";
 import Anthropic from "@anthropic-ai/sdk";
 import {
-  createDailyReport, logPick,
+  createDailyReport, logPick, archivePicksForDate,
   type DailyReportData, type PickToLog, type PickDetail,
 } from "../lib/notion.js";
 import type { FetchDataResult } from "./mlb-fetch-data.js";
@@ -108,7 +108,7 @@ function buildPerformanceContext(picks: PickDetail[]): string {
   const spWeak    = resolved.filter(p => p.spMatchupRating === "Weak");
 
   // 3. Bet type performance
-  const byBetType = (type: string) => resolved.filter(p => p.betType === type);
+  const byBetType = (type: string) => resolved.filter(p => p.betTypes.includes(type));
 
   // 4. Odds range performance
   const heavyFav  = resolved.filter(p => p.odds <= -115);
@@ -565,22 +565,30 @@ export const mlbAnalyzeTask = task({
     const notionPageUrl = await createDailyReport(reportData);
     console.log(`[mlb-analyze] Report created: ${notionPageUrl}`);
 
+    // Wipe any prior picks for this date before re-logging — guarantees a
+    // re-run replaces stale rows instead of stacking duplicates.
+    const archivedCount = await archivePicksForDate(fetchResult.date);
+    if (archivedCount > 0) {
+      console.log(`[mlb-analyze] Archived ${archivedCount} stale picks for ${fetchResult.date} (re-run cleanup)`);
+    }
+
     // Log all picks to Picks Tracker
     let picksLogged = 0;
     for (const p of picks) {
       if (p.noEligibleBet) continue;
 
-      const betType: PickToLog["betType"] =
-        p === betOfDay ? "Bet of Day" :
-        p === underdog ? "Underdog" :
-        top3.includes(p) ? "Top 3" : "Game Pick";
+      const betTypes: PickToLog["betTypes"] = [];
+      if (p === betOfDay) betTypes.push("Bet of Day");
+      if (p === underdog) betTypes.push("Underdog");
+      if (top3.includes(p)) betTypes.push("Top 3");
+      if (betTypes.length === 0) betTypes.push("Game Pick");
 
       try {
         await logPick({
           matchup: p.matchup,
           date: fetchResult.date,
           pick: p.pickDescription,
-          betType,
+          betTypes,
           odds: p.odds,
           impliedProbPct: impliedProb(p.odds),
           confidence: p.finalConfidence,

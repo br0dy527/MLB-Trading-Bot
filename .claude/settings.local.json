@@ -2,7 +2,17 @@
   "permissions": {
     "allow": [
       "Bash(python tools/fetch_schedule.py 2026-04-03)",
-      "Bash(python3 tools/fetch_schedule.py 2026-04-03)"
+      "Bash(python3 tools/fetch_schedule.py 2026-04-03)",
+      "Bash(npx tsc *)",
+      "mcp__claude_ai_Notion__notion-fetch",
+      "mcp__claude_ai_Notion__notion-update-data-source",
+      "Bash(npx trigger.dev@latest --help)",
+      "Bash(npx trigger.dev@latest env --help)",
+      "Bash(npx trigger.dev@latest whoami)",
+      "Bash(npx trigger.dev@latest env list --env prod)",
+      "Bash(npx trigger.dev@latest deploy)",
+      "Bash(npx trigger.dev@4.4.3 deploy)",
+      "Bash(git add *)"
     ]
   }
 }

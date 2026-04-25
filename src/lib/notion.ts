@@ -36,11 +36,13 @@ function reportsDbId(): string {
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
+export type BetTypeTag = "Bet of Day" | "Underdog" | "Top 3" | "Game Pick";
+
 export interface PickDetail {
   date: string;
   matchup: string;
   pick: string;
-  betType: string;
+  betTypes: string[];
   odds: number;
   impliedProbPct: number;
   confidence: number;
@@ -55,7 +57,7 @@ export interface PendingPick {
   pageId: string;
   matchup: string;
   pick: string;
-  betType: string;
+  betTypes: string[];
   odds: number;
   gameId: number;
 }
@@ -64,7 +66,7 @@ export interface PickToLog {
   matchup: string;           // "NYY @ BOS"
   date: string;              // "YYYY-MM-DD"
   pick: string;              // "NYY ML (-108)"
-  betType: "Bet of Day" | "Underdog" | "Top 3" | "Game Pick";
+  betTypes: BetTypeTag[];    // e.g. ["Bet of Day", "Top 3"] — multi-tag
   odds: number;
   impliedProbPct: number;
   confidence: number;
@@ -101,6 +103,15 @@ export interface PendingPickWithDate extends PendingPick {
   date: string;
 }
 
+/** Read Bet Type from a Notion page. Handles both legacy single `select` rows
+ *  (returns 1-element array) and the current `multi_select` schema. */
+function readBetTypes(props: any): string[] {
+  const ms = props?.["Bet Type"]?.multi_select;
+  if (Array.isArray(ms) && ms.length > 0) return ms.map((o: any) => o.name).filter(Boolean);
+  const single = props?.["Bet Type"]?.select?.name;
+  return single ? [single] : [];
+}
+
 async function queryPendingPicks(extraFilter?: object): Promise<PendingPickWithDate[]> {
   const notion = getClient();
   const picks: PendingPickWithDate[] = [];
@@ -125,7 +136,7 @@ async function queryPendingPicks(extraFilter?: object): Promise<PendingPickWithD
         date: props["Date"]?.date?.start ?? "",
         matchup: props["Matchup"]?.title?.[0]?.plain_text ?? "",
         pick: props["Pick"]?.rich_text?.[0]?.plain_text ?? props["Pick"]?.title?.[0]?.plain_text ?? "",
-        betType: props["Bet Type"]?.select?.name ?? props["Bet Type"]?.multi_select?.[0]?.name ?? "",
+        betTypes: readBetTypes(props),
         odds: props["Odds"]?.number ?? 0,
         gameId: props["GameID"]?.number ?? 0,
       });
@@ -150,9 +161,9 @@ export async function getYesterdayPendingPicks(yesterday: string): Promise<Pendi
 /** Fetch already-resolved picks for a specific date (Win/Loss/Push).
  *  Uses on_or_after + on_or_before instead of equals — more reliable across SDK versions.
  */
-export async function getResolvedPicksByDate(dateStr: string): Promise<Array<{ pick: string; betType: string; result: "Win" | "Loss" | "Push" }>> {
+export async function getResolvedPicksByDate(dateStr: string): Promise<Array<{ pick: string; betTypes: string[]; result: "Win" | "Loss" | "Push" }>> {
   const notion = getClient();
-  const picks: Array<{ pick: string; betType: string; result: "Win" | "Loss" | "Push" }> = [];
+  const picks: Array<{ pick: string; betTypes: string[]; result: "Win" | "Loss" | "Push" }> = [];
   let cursor: string | undefined;
   do {
     const res = await notion.dataSources.query({
@@ -173,10 +184,10 @@ export async function getResolvedPicksByDate(dateStr: string): Promise<Array<{ p
     for (const page of res.results) {
       if (page.object !== "page") continue;
       const props = (page as any).properties;
-      const betType = props["Bet Type"]?.select?.name ?? props["Bet Type"]?.multi_select?.[0]?.name ?? "";
+      const betTypes = readBetTypes(props);
       const pick = props["Pick"]?.rich_text?.[0]?.plain_text ?? props["Pick"]?.title?.[0]?.plain_text ?? "";
       const result = props["Result"]?.select?.name as "Win" | "Loss" | "Push";
-      picks.push({ pick, betType, result });
+      picks.push({ pick, betTypes, result });
     }
     cursor = res.has_more ? (res.next_cursor ?? undefined) : undefined;
   } while (cursor);
@@ -296,7 +307,7 @@ export async function getRecentPicksDetail(days = 21): Promise<PickDetail[]> {
         date: props["Date"]?.date?.start ?? "",
         matchup: props["Matchup"]?.title?.[0]?.plain_text ?? "",
         pick: props["Pick"]?.rich_text?.[0]?.plain_text ?? "",
-        betType: props["Bet Type"]?.select?.name ?? "",
+        betTypes: readBetTypes(props),
         odds: props["Odds"]?.number ?? 0,
         impliedProbPct: props["Implied Prob %"]?.number ?? 0,
         confidence: props["Confidence"]?.number ?? 0,
@@ -324,13 +335,20 @@ export async function updateDailyReportResults(
 ): Promise<void> {
   const notion = getClient();
 
+  // Daily Report titles are formatted as "Friday, April 24, 2026" — match the
+  // same format used by createDailyReport rather than the raw ISO date.
+  const formattedDate = formatReportTitleDate(date);
+
   const res = await notion.dataSources.query({
     data_source_id: reportsDsId(),
-    filter: { property: "Date", title: { contains: date } },
+    filter: { property: "Date", title: { contains: formattedDate } },
     page_size: 1,
   } as any);
 
-  if (res.results.length === 0) return;
+  if (res.results.length === 0) {
+    console.warn(`updateDailyReportResults: no Daily Report page found for ${date} ("${formattedDate}")`);
+    return;
+  }
   const pageId = res.results[0]?.id;
   if (!pageId) return;
 
@@ -344,16 +362,99 @@ export async function updateDailyReportResults(
   });
 }
 
+function formatReportTitleDate(isoDate: string): string {
+  const d = new Date(isoDate + "T12:00:00Z");
+  return d.toLocaleDateString("en-US", {
+    weekday: "long", month: "long", day: "2-digit", year: "numeric",
+  });
+}
+
+/** Parse a Daily Report title back to ISO date. Returns null if unparseable. */
+export function parseReportTitleDate(title: string): string | null {
+  // Strip leading weekday — accept either "April 24, 2026" or "Friday, April 24, 2026"
+  const stripped = title.replace(/^[A-Za-z]+,\s*/, "");
+  const t = Date.parse(stripped);
+  if (isNaN(t)) return null;
+  return new Date(t).toISOString().split("T")[0] ?? null;
+}
+
+/** Archive every Picks Tracker row for the given date. Used as a "wipe & replace"
+ *  before re-logging picks on a manual re-run, so we never accumulate duplicate
+ *  rows for one date. Returns the number of pages archived. */
+export async function archivePicksForDate(date: string): Promise<number> {
+  const notion = getClient();
+  let archived = 0;
+  let cursor: string | undefined;
+  do {
+    const res = await notion.dataSources.query({
+      data_source_id: picksDsId(),
+      start_cursor: cursor,
+      filter: { property: "Date", date: { equals: date } },
+    } as any);
+    for (const page of res.results) {
+      if (page.object !== "page") continue;
+      try {
+        await notion.pages.update({ page_id: page.id, archived: true } as any);
+        archived++;
+      } catch (err) {
+        console.warn(`archivePicksForDate: failed to archive ${page.id}: ${err}`);
+      }
+    }
+    cursor = res.has_more ? (res.next_cursor ?? undefined) : undefined;
+  } while (cursor);
+  return archived;
+}
+
+/** Read the BOTD / UOTD text and Top 3 record as displayed on a prior Daily
+ *  Report page. Returns null if the report doesn't exist. The scorecard uses
+ *  this text verbatim instead of reconstructing it from the Picks Tracker, so
+ *  the scorecard always matches what was actually published on the prior day. */
+export async function getDailyReportSummary(date: string): Promise<{
+  botdText: string;
+  uotdText: string;
+} | null> {
+  const notion = getClient();
+  const formattedDate = formatReportTitleDate(date);
+  const res = await notion.dataSources.query({
+    data_source_id: reportsDsId(),
+    filter: { property: "Date", title: { contains: formattedDate } },
+    page_size: 1,
+  } as any);
+  if (res.results.length === 0) return null;
+  const props = (res.results[0] as any).properties;
+  return {
+    botdText: props["Bet of Day"]?.rich_text?.[0]?.plain_text ?? "",
+    uotdText: props["Underdog of Day"]?.rich_text?.[0]?.plain_text ?? "",
+  };
+}
+
+/** List every Daily Report page with its title for backfill. */
+export async function listDailyReports(): Promise<Array<{ pageId: string; title: string; date: string | null }>> {
+  const notion = getClient();
+  const out: Array<{ pageId: string; title: string; date: string | null }> = [];
+  let cursor: string | undefined;
+  do {
+    const res = await notion.dataSources.query({
+      data_source_id: reportsDsId(),
+      start_cursor: cursor,
+    } as any);
+    for (const page of res.results) {
+      if (page.object !== "page") continue;
+      const props = (page as any).properties;
+      const title = props["Date"]?.title?.[0]?.plain_text ?? "";
+      out.push({ pageId: page.id, title, date: parseReportTitleDate(title) });
+    }
+    cursor = res.has_more ? (res.next_cursor ?? undefined) : undefined;
+  } while (cursor);
+  return out;
+}
+
 // ─── Create today's Daily Report page ────────────────────────────────────────
 
 export async function createDailyReport(data: DailyReportData): Promise<string> {
   const notion = getClient();
 
-  // Format date as "Sunday, April 06, 2026"
-  const dateObj = new Date(data.date + "T12:00:00Z");
-  const formattedDate = dateObj.toLocaleDateString("en-US", {
-    weekday: "long", month: "long", day: "2-digit", year: "numeric",
-  });
+  const formattedDate = formatReportTitleDate(data.date);
 
   const page = await notion.pages.create({
     parent: { type: "database_id", database_id: reportsDbId() },
@@ -386,7 +487,7 @@ export async function logPick(pick: PickToLog): Promise<void> {
       "Matchup":          { title: [{ text: { content: pick.matchup } }] },
       "Date":             { date: { start: pick.date } },
       "Pick":             { rich_text: [{ text: { content: pick.pick } }] },
-      "Bet Type":         { select: { name: pick.betType } },
+      "Bet Type":         { multi_select: pick.betTypes.map(name => ({ name })) },
       "Odds":             { number: pick.odds },
       "Implied Prob %":   { number: Math.round(pick.impliedProbPct * 10) / 10 },
       "Confidence":       { number: pick.confidence },

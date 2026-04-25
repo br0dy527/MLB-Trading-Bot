@@ -41,7 +41,7 @@ interface Pick {
   createdTime: string;
   matchup: string;
   pick: string;
-  betType: string;
+  betTypes: string[];
   odds: number;
   gameId: number;
   reportLink: string;
@@ -67,7 +67,8 @@ async function fetchAllPicksForDate(date: string): Promise<Pick[]> {
         createdTime: p.created_time,
         matchup: p.properties["Matchup"]?.title?.[0]?.plain_text ?? "",
         pick: p.properties["Pick"]?.rich_text?.[0]?.plain_text ?? "",
-        betType: p.properties["Bet Type"]?.select?.name ?? "",
+        betTypes: (p.properties["Bet Type"]?.multi_select ?? [])
+          .map((o: any) => o.name).filter(Boolean) as string[],
         odds: p.properties["Odds"]?.number ?? 0,
         gameId: p.properties["GameID"]?.number ?? 0,
         reportLink: p.properties["Report Link"]?.url ?? "",

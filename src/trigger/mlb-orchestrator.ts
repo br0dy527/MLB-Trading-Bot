@@ -6,9 +6,11 @@
 import { schedules } from "@trigger.dev/sdk/v3";
 import { mlbFetchDataTask } from "./mlb-fetch-data.js";
 import { mlbAnalyzeTask } from "./mlb-analyze.js";
+import { mlbAggregatorTask } from "./mlb-aggregator.js";
 import {
   getAllPendingPicks, updatePickResult, getRunningRecord, getAllTimeRecord,
   getRecentPicksDetail, updateDailyReportResults, getResolvedPicksByDate,
+  getDailyReportSummary,
   type PickDetail,
 } from "../lib/notion.js";
 import { fetchFinalScores } from "../lib/mlb-api.js";
@@ -34,7 +36,7 @@ export const mlbOrchestratorTask = schedules.task({
     let yesterdayScorecardText = "No picks yesterday — off day.";
 
     // Resolved pick shape for scoreboard building
-    interface ResolvedPick { date: string; pick: string; betType: string; result: "Win" | "Loss" | "Push" }
+    interface ResolvedPick { date: string; pick: string; betTypes: string[]; result: "Win" | "Loss" | "Push" }
     const allResolved: ResolvedPick[] = [];
 
     try {
@@ -62,57 +64,61 @@ export const mlbOrchestratorTask = schedules.task({
 
           const result = resolvePick(pick.pick, pick.odds, score.homeScore, score.awayScore, pick.matchup);
           await updatePickResult(pick.pageId, result);
-          allResolved.push({ date: pick.date, pick: pick.pick, betType: pick.betType, result });
+          allResolved.push({ date: pick.date, pick: pick.pick, betTypes: pick.betTypes, result });
           console.log(`  [${pick.date}] ${pick.matchup} — ${pick.pick} → ${result}`);
         }
       }
 
-      // Scoreboard uses yesterday's resolved picks — from this run or already resolved
-      let ydResolved = allResolved.filter(r => r.date === yesterdayDate);
-      if (ydResolved.length === 0) {
-        console.log(`  No pending picks resolved for ${yesterdayDate} — checking already-resolved...`);
-        const prior = await getResolvedPicksByDate(yesterdayDate);
-        ydResolved = prior.map(p => ({ date: yesterdayDate, pick: p.pick, betType: p.betType, result: p.result }));
-        console.log(`  Found ${ydResolved.length} already-resolved picks for ${yesterdayDate}`);
-        if (ydResolved.length > 0) {
-          console.log(`  BetTypes found: ${ydResolved.map(r => `"${r.betType}"`).join(", ")}`);
-        }
-      }
+      // Update Daily Report pages for every date that had resolutions this run,
+      // plus yesterday (so the scorecard always reflects the latest state).
+      const datesToUpdate = new Set<string>(allResolved.map(r => r.date).filter(Boolean));
+      datesToUpdate.add(yesterdayDate);
 
-      if (ydResolved.length > 0) {
-        // Normalize betType to handle minor variations (e.g. "Bet of the Day" vs "Bet of Day")
-        const normalizeBetType = (bt: string): string => {
-          const t = bt.trim().toLowerCase();
-          if (t === "bet of day" || t === "bet of the day" || t === "botd" || t === "best bet") return "Bet of Day";
-          if (t === "underdog" || t === "underdog of day" || t === "uotd") return "Underdog";
-          if (t === "top 3" || t === "top3" || t === "top pick") return "Top 3";
-          return bt;
-        };
-        const normalized = ydResolved.map(r => ({ ...r, betType: normalizeBetType(r.betType) }));
-
-        const botd = normalized.find(r => r.betType === "Bet of Day");
-        const uotd = normalized.find(r => r.betType === "Underdog");
-        const top3 = normalized.filter(r => r.betType === "Top 3");
-        console.log(`  BOTD: ${botd?.pick ?? "none"} | UOTD: ${uotd?.pick ?? "none"} | Top3: ${top3.length} picks`);
+      const summarizeDate = async (d: string) => {
+        const all = await getResolvedPicksByDate(d);
+        const normalized = all.map(p => ({ ...p, betTypes: p.betTypes.map(normalizeBetType) }));
+        const botd = normalized.find(r => r.betTypes.includes("Bet of Day"));
+        const uotd = normalized.find(r => r.betTypes.includes("Underdog"));
+        const top3 = normalized.filter(r => r.betTypes.includes("Top 3"));
         const top3W = top3.filter(r => r.result === "Win").length;
         const top3L = top3.filter(r => r.result === "Loss").length;
         const top3P = top3.filter(r => r.result === "Push").length;
+        return { all: normalized, botd, uotd, top3, top3W, top3L, top3P };
+      };
+
+      let ySummary: Awaited<ReturnType<typeof summarizeDate>> | null = null;
+      for (const d of datesToUpdate) {
+        try {
+          const s = await summarizeDate(d);
+          if (s.all.length === 0) {
+            console.log(`  ${d}: no resolved picks — skipping report update`);
+            if (d === yesterdayDate) ySummary = s;
+            continue;
+          }
+          await updateDailyReportResults(
+            d,
+            s.botd?.result ?? "N/A",
+            s.uotd?.result ?? "N/A",
+            `${s.top3W}-${s.top3L}-${s.top3P}`,
+          );
+          console.log(`  ${d}: BOTD=${s.botd?.result ?? "N/A"} UOTD=${s.uotd?.result ?? "N/A"} Top3=${s.top3W}-${s.top3L}-${s.top3P}`);
+          if (d === yesterdayDate) ySummary = s;
+        } catch (err) {
+          console.warn(`  Could not update report for ${d}: ${err}`);
+        }
+      }
+
+      if (ySummary && ySummary.all.length > 0) {
+        const { botd, uotd, top3W, top3L, top3P } = ySummary;
         const top3WinPct = (top3W + top3L) > 0
           ? Math.round(top3W / (top3W + top3L) * 1000) / 10 : 0;
 
-        const ydW = normalized.filter(r => r.result === "Win").length;
-        const ydL = normalized.filter(r => r.result === "Loss").length;
-        const ydP = normalized.filter(r => r.result === "Push").length;
-        try {
-          await updateDailyReportResults(
-            yesterdayDate,
-            botd?.result ?? "N/A",
-            uotd?.result ?? "N/A",
-            `${top3W}-${top3L}-${top3P}`
-          );
-        } catch (err) {
-          console.warn(`  Could not update yesterday's report page: ${err}`);
-        }
+        // Prefer the BOTD/UOTD text exactly as displayed on yesterday's report
+        // page — keeps the scorecard visually aligned with the prior day's
+        // report, even if the Picks Tracker text differs slightly.
+        const yReport = await getDailyReportSummary(yesterdayDate).catch(() => null);
+        const botdPickText = yReport?.botdText || botd?.pick || "—";
+        const uotdPickText = yReport?.uotdText || uotd?.pick || "—";
 
         // Fetch running records AFTER resolution so counts are current
         const [runningRecord30, allTime] = await Promise.all([
@@ -128,13 +134,16 @@ export const mlbOrchestratorTask = schedules.task({
         yesterdayScorecardText = [
           `| Category | Pick | Result |`,
           `|---|---|---|`,
-          `| Bet of the Day | ${botd?.pick ?? "—"} | ${botd?.result ?? "No pick"} |`,
-          `| Underdog of Day | ${uotd?.pick ?? "—"} | ${uotd?.result ?? "No pick"} |`,
+          `| Bet of the Day | ${botdPickText} | ${botd?.result ?? "No pick"} |`,
+          `| Underdog of Day | ${uotdPickText} | ${uotd?.result ?? "No pick"} |`,
           `| Top 3 | — | ${top3W}-${top3L}-${top3P} (${top3WinPct}%) |`,
           `| 30-Day Running | — | ${runningRecord30.wins}-${runningRecord30.losses} (${rrWinPct}%) · ROI: ${sign(runningRecord30.roiUnits)} units |`,
           `| **Overall (Season)** | — | **${allTime.wins}-${allTime.losses}-${allTime.pushes} (${atWinPct}%) · ${sign(allTime.roiUnits)} units** |`,
         ].join("\n");
 
+        const ydW = ySummary.all.filter(r => r.result === "Win").length;
+        const ydL = ySummary.all.filter(r => r.result === "Loss").length;
+        const ydP = ySummary.all.filter(r => r.result === "Push").length;
         console.log(`  Yesterday: ${ydW}W-${ydL}L-${ydP}P | 30-day: ${runningRecord30.wins}-${runningRecord30.losses} | All-time: ${allTime.wins}-${allTime.losses}`);
       }
     } catch (err) {
@@ -182,17 +191,25 @@ export const mlbOrchestratorTask = schedules.task({
     console.log(`  ${games.length} games fetched. ${dataNotes.length} data notes.`);
 
     // ── STEP 4: Analyze and publish ──────────────────────────────────────────
-    console.log("\n[Step 4] Running 10-pillar analysis and publishing to Notion...");
+    // Feature flag: USE_AGGREGATOR=1 routes through the green-team fleet
+    // (mlb-aggregator → mlb-green-analyst per game). Default = legacy mega-prompt.
+    const useAggregator = process.env.USE_AGGREGATOR === "1";
+    console.log(`\n[Step 4] Running 10-pillar analysis (${useAggregator ? "AGGREGATOR/green-team" : "legacy mega-prompt"})...`);
 
-    const analyzeResult = await mlbAnalyzeTask.triggerAndWait(
-      {
-        fetchResult: fetchResult.output,
-        runningRecord,
-        yesterdayScorecard: yesterdayScorecardText,
-        recentPicks,
-      },
-      { idempotencyKey: `mlb-analyze-${today}` }
-    );
+    const analyzePayload = {
+      fetchResult: fetchResult.output,
+      runningRecord,
+      yesterdayScorecard: yesterdayScorecardText,
+      recentPicks,
+    };
+
+    const analyzeResult = useAggregator
+      ? await mlbAggregatorTask.triggerAndWait(analyzePayload, {
+          idempotencyKey: `mlb-aggregator-${today}`,
+        })
+      : await mlbAnalyzeTask.triggerAndWait(analyzePayload, {
+          idempotencyKey: `mlb-analyze-${today}`,
+        });
 
     if (!analyzeResult.ok) {
       throw new Error(`Analysis failed: ${String(analyzeResult.error)}`);
@@ -227,6 +244,16 @@ export const mlbOrchestratorTask = schedules.task({
     };
   },
 });
+
+// ─── Normalize Bet Type strings for robust filtering ─────────────────────────
+// Handles minor variations across runs (e.g. "Bet of the Day" vs "Bet of Day").
+function normalizeBetType(bt: string): string {
+  const t = bt.trim().toLowerCase();
+  if (t === "bet of day" || t === "bet of the day" || t === "botd" || t === "best bet") return "Bet of Day";
+  if (t === "underdog" || t === "underdog of day" || t === "uotd") return "Underdog";
+  if (t === "top 3" || t === "top3" || t === "top pick") return "Top 3";
+  return bt;
+}
 
 // ─── Team name fragments for robust pick matching ────────────────────────────
 // Maps 3-letter abbreviation to all substrings that may appear in a pick description.
