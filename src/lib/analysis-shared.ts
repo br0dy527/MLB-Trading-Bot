@@ -3,7 +3,7 @@
 // implementations stay aligned (output schema, performance context, report
 // markdown, odds math).
 
-import type { PickDetail } from "./notion.js";
+import type { PickDetail, Lesson } from "./notion.js";
 
 // ─── Types for Claude's structured output ────────────────────────────────────
 
@@ -47,6 +47,21 @@ export interface GamePickResult {
   lineupPending: boolean;
   spMatchupRating: "Strong" | "Neutral" | "Weak";
   notes: string;
+  redTeamReview?: RedTeamReview;          // attached after red-team phase
+  preRedTeamConfidence?: number;          // green-team confidence before adjustment
+}
+
+export interface RedTeamReview {
+  pickDescription: string;
+  matchup: string;
+  caseAgainstAdditions: string[];                                          // 1-3 new bullets, each must cite a stat
+  citedStats: Array<{ stat: string; relevance: string }>;                  // ≥2 required for adjustment to apply
+  confidenceAdjustment: number;                                            // -15 to 0 (clamped on apply)
+  vetoRecommended: boolean;
+  vetoReason: string | null;                                               // required when vetoRecommended=true
+  evidenceQuality: "sufficient" | "insufficient";                          // "insufficient" → adjustment rejected
+  insufficientReason: string | null;
+  summary: string;                                                         // 1-2 sentence overview
 }
 
 // ─── Implied probability from American odds ─────────────────────────────────
@@ -178,6 +193,53 @@ export function buildPerformanceContext(picks: PickDetail[]): string {
   return lines.join("\n");
 }
 
+// ─── Institutional Knowledge (Lessons Learned) ──────────────────────────────
+
+export function buildLessonsContext(lessons: Lesson[]): string {
+  if (!lessons || lessons.length === 0) {
+    return "_No durable lessons captured yet — fall back to calibration data only._";
+  }
+
+  const byCategory = new Map<string, Lesson[]>();
+  for (const l of lessons) {
+    const list = byCategory.get(l.category) ?? [];
+    list.push(l);
+    byCategory.set(l.category, list);
+  }
+
+  const lines: string[] = [];
+  lines.push(`The following are durable patterns identified by the post-mortem agent over time. They override short-term calibration when they apply. Each lesson includes a confidence-direction (BOOST / REDUCE / VETO / FLAG) and a magnitude.`);
+  lines.push("");
+
+  for (const [cat, items] of byCategory) {
+    lines.push(`**${cat}:**`);
+    for (const l of items) {
+      const efficacy = (l.winsWhenApplied + l.lossesWhenApplied) > 0
+        ? ` [${l.winsWhenApplied}W-${l.lossesWhenApplied}L when applied]`
+        : "";
+      const reinforced = l.timesReinforced > 1 ? ` (reinforced ${l.timesReinforced}×)` : "";
+      lines.push(`- **${l.title}** [${l.direction} ${l.magnitude > 0 ? "+" : ""}${l.magnitude}]${reinforced}${efficacy}`);
+      lines.push(`  Pattern: ${l.pattern}`);
+    }
+    lines.push("");
+  }
+
+  lines.push(`**How to apply lessons:**`);
+  lines.push(`1. For each pick, scan the lessons above. If a pick clearly matches a pattern, you MUST cite the lesson title and apply its magnitude as an adjustment, e.g.:`);
+  lines.push(`   \`{"reason": "Lesson: <Title> — <how it matches today's game>", "delta": <magnitude>}\``);
+  lines.push(`2. VETO direction → set noEligibleBet=true and noEligibleBetReason citing the lesson.`);
+  lines.push(`3. FLAG direction → no auto-adjustment; mention the flag in caseAgainst so the red team can weigh it.`);
+  lines.push(`4. Do NOT manufacture matches. Cite a lesson only if today's game genuinely matches the pattern.`);
+
+  return lines.join("\n");
+}
+
+export function institutionalKnowledgeBlock(lessons: Lesson[]): string {
+  return `## INSTITUTIONAL KNOWLEDGE (durable lessons)
+
+${buildLessonsContext(lessons)}`;
+}
+
 // ─── Calibration & rules block (shared by mega-prompt and per-game prompt) ──
 
 export function calibrationRulesBlock(performanceContext: string): string {
@@ -302,7 +364,56 @@ Return ONE JSON object (NOT an array, NOT wrapped) shaped exactly:
   "notes": "1-2 sentence summary"
 }`;
 
+// ─── Red Team prompt blocks ─────────────────────────────────────────────────
+
+export const RED_TEAM_RULES_BLOCK = `## RED TEAM RULES
+You are the RED TEAM analyst. Your job is to challenge the GREEN TEAM's pick and find what they missed, underweighted, or got wrong.
+
+1. Every counter-argument in \`caseAgainstAdditions\` MUST cite at least 1 specific stat (number, percentage, ERA, OPS, record, etc.) tied to today's game. Generic critiques ("the other team could play well") are REJECTED.
+2. You must collect at least 2 cited stats total in \`citedStats\`. If you cannot, set \`evidenceQuality: "insufficient"\` — the system will reject your adjustment.
+3. \`confidenceAdjustment\` is a NEGATIVE number, capped at -15. Use 0 if your critique is weak. Reserve -10 to -15 for picks with serious flaws.
+4. Recommend \`vetoRecommended: true\` ONLY when there's a definitive reason this bet should not be made (e.g. SP scratched, line moved past -120 threshold, key starter ruled out). Doubt alone is NOT enough — that's what the adjustment is for.
+5. Do NOT manufacture concerns. If the green team's reasoning is solid and you cannot find specific counter-evidence, return \`confidenceAdjustment: 0\` and a short summary stating the green-team case holds up.
+6. Do NOT repeat the green team's existing case AGAINST. Your job is to find what they MISSED.`;
+
+export const RED_TEAM_OUTPUT_SCHEMA = `## RED TEAM OUTPUT JSON SCHEMA
+Return ONE JSON object (NOT an array, NOT wrapped) shaped exactly:
+{
+  "pickDescription": "exact match to green team's pickDescription",
+  "matchup": "AWAY @ HOME",
+  "caseAgainstAdditions": [
+    "Counter-argument 1 with specific stat cited inline",
+    "Counter-argument 2 with specific stat"
+  ],
+  "citedStats": [
+    { "stat": "Sasaki's 6.11 ERA in 2026 (3 starts)", "relevance": "undermines case FOR CHC's SP edge" },
+    { "stat": "LAD bullpen 3.46 ERA, top 5 in NL", "relevance": "limits late-game upside for CHC ML" }
+  ],
+  "confidenceAdjustment": -8,
+  "vetoRecommended": false,
+  "vetoReason": null,
+  "evidenceQuality": "sufficient",
+  "insufficientReason": null,
+  "summary": "1-2 sentence overview of why this pick is weaker than the green team estimated"
+}`;
+
 // ─── Parse a single JSON object out of Claude's response ────────────────────
+
+export function parseRedTeamJSON(raw: string): RedTeamReview {
+  const start = raw.indexOf("{");
+  const end = raw.lastIndexOf("}");
+  if (start === -1 || end === -1 || end < start) {
+    console.error("No JSON object in red-team response. First 500 chars:", raw.slice(0, 500));
+    throw new Error("Red-team JSON parse failed: no object braces found");
+  }
+  const extracted = raw.slice(start, end + 1);
+  try {
+    return JSON.parse(extracted) as RedTeamReview;
+  } catch (err) {
+    console.error("Failed to parse red-team JSON. First 500 chars:", extracted.slice(0, 500));
+    throw new Error(`Red-team JSON parse failed: ${(err as Error).message}`);
+  }
+}
 
 export function parseSinglePickJSON(raw: string): GamePickResult {
   const start = raw.indexOf("{");
@@ -336,6 +447,27 @@ export function buildReportMarkdown(
   lines.push("");
   lines.push("---");
 
+  const renderRedTeam = (p: GamePickResult): string[] => {
+    const r = p.redTeamReview;
+    if (!r) return [];
+    const out: string[] = [];
+    out.push(`**🔴 Red Team Review:** ${r.summary}`);
+    if (typeof p.preRedTeamConfidence === "number" && p.preRedTeamConfidence !== p.finalConfidence) {
+      out.push(`*Confidence: ${p.preRedTeamConfidence}% (green) → ${p.finalConfidence}% (after red-team adjustment ${r.confidenceAdjustment >= 0 ? "+" : ""}${r.confidenceAdjustment})*`);
+    } else if (r.evidenceQuality === "insufficient") {
+      out.push(`*Red team adjustment rejected — ${r.insufficientReason ?? "insufficient evidence"}*`);
+    }
+    if (r.caseAgainstAdditions.length > 0) {
+      out.push("**Additional Counter-Arguments:**");
+      r.caseAgainstAdditions.forEach(a => out.push(`- ${a}`));
+    }
+    if (r.vetoRecommended) {
+      out.push(`**⚠️ VETO Recommended:** ${r.vetoReason ?? "no reason given"}`);
+    }
+    out.push("");
+    return out;
+  };
+
   if (betOfDay) {
     lines.push("## Bet of the Day");
     lines.push(`**${betOfDay.pickDescription}** | Confidence: **${betOfDay.finalConfidence}%**`);
@@ -344,6 +476,7 @@ export function buildReportMarkdown(
     lines.push("");
     lines.push(`**Case AGAINST:** ${betOfDay.caseAgainst}`);
     lines.push("");
+    lines.push(...renderRedTeam(betOfDay));
     lines.push(`**Verdict:** ${betOfDay.verdict}`);
     lines.push("");
     lines.push("---");
@@ -361,6 +494,7 @@ export function buildReportMarkdown(
     lines.push("");
     lines.push(`**Case AGAINST:** ${underdog.caseAgainst}`);
     lines.push("");
+    lines.push(...renderRedTeam(underdog));
     lines.push(`**Verdict:** ${underdog.verdict}`);
     lines.push("");
     lines.push("---");
@@ -372,6 +506,7 @@ export function buildReportMarkdown(
       lines.push(`### Pick ${i + 1}: ${p.pickDescription} | Confidence: ${p.finalConfidence}%`);
       lines.push(`**For:** ${p.caseFor}`);
       lines.push(`**Against:** ${p.caseAgainst}`);
+      lines.push(...renderRedTeam(p));
       lines.push(`**Verdict:** ${p.verdict}`);
       lines.push("---");
     });

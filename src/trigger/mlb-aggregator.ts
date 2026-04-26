@@ -5,7 +5,7 @@
 import { task } from "@trigger.dev/sdk/v3";
 import {
   createDailyReport, logPick, archivePicksForDate,
-  type DailyReportData, type PickToLog, type PickDetail,
+  type DailyReportData, type PickToLog, type PickDetail, type Lesson,
 } from "../lib/notion.js";
 import {
   buildPerformanceContext, buildReportMarkdown, impliedProb,
@@ -13,12 +13,14 @@ import {
 } from "../lib/analysis-shared.js";
 import type { FetchDataResult } from "./mlb-fetch-data.js";
 import { mlbGreenAnalystTask } from "./mlb-green-analyst.js";
+import { mlbRedAnalystTask } from "./mlb-red-analyst.js";
 
 export interface AggregatorPayload {
   fetchResult: FetchDataResult;
   runningRecord: { wins: number; losses: number; pushes: number; roiUnits: number };
   yesterdayScorecard: string;
   recentPicks: PickDetail[];
+  lessons?: Lesson[];
 }
 
 export interface AggregatorResult {
@@ -28,6 +30,8 @@ export interface AggregatorResult {
   top3: string[];
   picksLogged: number;
   greenTeamFailures: number;
+  redTeamFailures: number;
+  redTeamVetoes: number;
 }
 
 export const mlbAggregatorTask = task({
@@ -36,7 +40,7 @@ export const mlbAggregatorTask = task({
   retry: { maxAttempts: 1 }, // child tasks have their own retries
 
   run: async (payload: AggregatorPayload): Promise<AggregatorResult> => {
-    const { fetchResult, runningRecord, yesterdayScorecard, recentPicks } = payload;
+    const { fetchResult, runningRecord, yesterdayScorecard, recentPicks, lessons = [] } = payload;
 
     if (fetchResult.games.length === 0) {
       throw new Error("No games to analyze — fetch returned empty schedule");
@@ -58,27 +62,38 @@ export const mlbAggregatorTask = task({
         performanceContext,
         yesterdayScorecard,
         runningRecord,
+        lessons,
       },
       options: { idempotencyKey: `green-${fetchResult.date}-${game.gameId}` },
     }));
 
-    console.log(`[aggregator] Dispatching ${items.length} green-analyst calls in parallel...`);
+    // Chunk dispatches to stay under Anthropic org output-token rate limit.
+    // Each green-analyst requests max_tokens=4000; chunks of 5 keep peak
+    // requested output ≤20k/min, well under typical org caps.
+    const CHUNK_SIZE = 5;
+    console.log(`[aggregator] Dispatching ${items.length} green-analyst calls in chunks of ${CHUNK_SIZE}...`);
     const startTime = Date.now();
-    const batchResult = await mlbGreenAnalystTask.batchTriggerAndWait(items);
-    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
 
     const picks: GamePickResult[] = [];
     let failures = 0;
+    let globalIdx = 0;
 
-    batchResult.runs.forEach((run, idx) => {
-      const matchup = fetchResult.games[idx]?.matchup ?? `idx=${idx}`;
-      if (run.ok) {
-        picks.push(run.output.pick);
-      } else {
-        failures++;
-        console.warn(`[aggregator] green-analyst failed for ${matchup}: ${String(run.error)}`);
-      }
-    });
+    for (let i = 0; i < items.length; i += CHUNK_SIZE) {
+      const chunk = items.slice(i, i + CHUNK_SIZE);
+      const chunkResult = await mlbGreenAnalystTask.batchTriggerAndWait(chunk);
+      chunkResult.runs.forEach((run, localIdx) => {
+        const matchup = fetchResult.games[globalIdx + localIdx]?.matchup ?? `idx=${globalIdx + localIdx}`;
+        if (run.ok) {
+          picks.push(run.output.pick);
+        } else {
+          failures++;
+          console.warn(`[aggregator] green-analyst failed for ${matchup}: ${String(run.error)}`);
+        }
+      });
+      globalIdx += chunk.length;
+    }
+
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
 
     if (picks.length === 0) {
       throw new Error(`All ${fetchResult.games.length} green-analyst calls failed — aborting`);
@@ -86,15 +101,94 @@ export const mlbAggregatorTask = task({
 
     console.log(`[aggregator] Collected ${picks.length}/${fetchResult.games.length} picks in ${elapsed}s (${failures} failures)`);
 
-    // ── Phase 2: rank and select featured ───────────────────────────────────
+    // ── Phase 2: rank and select candidate pool for red-team review ─────────
     const eligible = picks.filter(p => p.eligible && !p.noEligibleBet);
-    const sorted = [...eligible].sort((a, b) => b.finalConfidence - a.finalConfidence);
+    const sortedByGreen = [...eligible].sort((a, b) => b.finalConfidence - a.finalConfidence);
+
+    // Red team reviews the picks that are candidates for BOTD / UOTD / Top 3:
+    // top 6 by green-team confidence + best positive-odds candidate (if not already in).
+    const top6 = sortedByGreen.slice(0, 6);
+    const positiveOddsTop = eligible
+      .filter(p => p.odds > 0)
+      .sort((a, b) => b.finalConfidence - a.finalConfidence)[0] ?? null;
+    const candidatePool = positiveOddsTop && !top6.includes(positiveOddsTop)
+      ? [...top6, positiveOddsTop]
+      : top6;
+
+    console.log(`[aggregator] Pre-red-team — top green confidences: ${sortedByGreen.slice(0, 3).map(p => `${p.pickDescription}@${p.finalConfidence}%`).join(", ")}`);
+    console.log(`[aggregator] Red-team will review ${candidatePool.length} candidates`);
+
+    // ── Phase 2b: dispatch red team in chunks of 5 ──────────────────────────
+    const RED_CHUNK_SIZE = 5;
+    const gameById = new Map(fetchResult.games.map(g => [g.gameId, g]));
+    const redItems = candidatePool
+      .map(pick => {
+        const game = gameById.get(pick.gameId);
+        if (!game) return null;
+        return {
+          payload: {
+            date: fetchResult.date,
+            greenPick: pick,
+            game,
+            tavilyResults: fetchResult.tavilyResults,
+            lessons,
+          },
+          options: { idempotencyKey: `red-${fetchResult.date}-${pick.gameId}-${pick.pickDescription.slice(0, 40)}` },
+          pickRef: pick,
+        };
+      })
+      .filter((x): x is NonNullable<typeof x> => x !== null);
+
+    let redFailures = 0;
+    const redStart = Date.now();
+
+    for (let i = 0; i < redItems.length; i += RED_CHUNK_SIZE) {
+      const chunk = redItems.slice(i, i + RED_CHUNK_SIZE);
+      const chunkResult = await mlbRedAnalystTask.batchTriggerAndWait(
+        chunk.map(({ payload, options }) => ({ payload, options })),
+      );
+      chunkResult.runs.forEach((run, localIdx) => {
+        const item = chunk[localIdx];
+        if (!item) return;
+        const pickRef = item.pickRef;
+        if (run.ok) {
+          const review = run.output.review;
+          pickRef.redTeamReview = review;
+          pickRef.preRedTeamConfidence = pickRef.finalConfidence;
+
+          // Apply confidence adjustment only if evidence is sufficient.
+          if (review.evidenceQuality === "sufficient") {
+            const delta = Math.max(-15, Math.min(0, review.confidenceAdjustment));
+            pickRef.finalConfidence = Math.max(10, Math.min(95, pickRef.finalConfidence + delta));
+          }
+        } else {
+          redFailures++;
+          console.warn(`[aggregator] red-analyst failed for ${pickRef.matchup} — ${pickRef.pickDescription}: ${String(run.error)}`);
+        }
+      });
+    }
+
+    const redElapsed = ((Date.now() - redStart) / 1000).toFixed(1);
+    console.log(`[aggregator] Red-team complete in ${redElapsed}s (${redFailures} failures)`);
+
+    // ── Phase 2c: re-rank after red-team adjustments and apply vetoes ───────
+    const vetoedKeys = new Set(
+      candidatePool
+        .filter(p => p.redTeamReview?.vetoRecommended)
+        .map(p => `${p.gameId}|${p.pickDescription}`),
+    );
+    const featuresEligible = eligible.filter(p => !vetoedKeys.has(`${p.gameId}|${p.pickDescription}`));
+
+    const sorted = [...featuresEligible].sort((a, b) => b.finalConfidence - a.finalConfidence);
     const betOfDay = sorted[0] ?? null;
-    const underdog = eligible
+    const underdog = featuresEligible
       .filter(p => p.odds > 0)
       .sort((a, b) => b.finalConfidence - a.finalConfidence)[0] ?? null;
     const top3 = sorted.slice(0, 3);
 
+    if (vetoedKeys.size > 0) {
+      console.log(`[aggregator] Red-team vetoed ${vetoedKeys.size} pick(s); re-ranked from remaining ${featuresEligible.length} eligible`);
+    }
     console.log(`[aggregator] BOTD: ${betOfDay?.pickDescription ?? "none"} | UOTD: ${underdog?.pickDescription ?? "none"} | Top 3: ${top3.length}`);
 
     // ── Phase 3: publish ────────────────────────────────────────────────────
@@ -163,6 +257,8 @@ export const mlbAggregatorTask = task({
       top3: top3.map(p => p.pickDescription),
       picksLogged,
       greenTeamFailures: failures,
+      redTeamFailures: redFailures,
+      redTeamVetoes: vetoedKeys.size,
     };
   },
 });

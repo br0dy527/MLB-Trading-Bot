@@ -7,11 +7,12 @@ import { schedules } from "@trigger.dev/sdk/v3";
 import { mlbFetchDataTask } from "./mlb-fetch-data.js";
 import { mlbAnalyzeTask } from "./mlb-analyze.js";
 import { mlbAggregatorTask } from "./mlb-aggregator.js";
+import { mlbPostmortemTask } from "./mlb-postmortem.js";
 import {
   getAllPendingPicks, updatePickResult, getRunningRecord, getAllTimeRecord,
   getRecentPicksDetail, updateDailyReportResults, getResolvedPicksByDate,
-  getDailyReportSummary,
-  type PickDetail,
+  getDailyReportSummary, getActiveLessons,
+  type PickDetail, type Lesson,
 } from "../lib/notion.js";
 import { fetchFinalScores } from "../lib/mlb-api.js";
 
@@ -151,20 +152,47 @@ export const mlbOrchestratorTask = schedules.task({
       yesterdayScorecardText = `Scoring unavailable: ${String(err)}`;
     }
 
+    // ── STEP 1b: Run post-mortem on yesterday's resolved picks ──────────────────
+    // Writes durable lessons to the Lessons Learned DB. Runs BEFORE step 2 so the
+    // green/red analysts see freshly-written lessons in the same session.
+    if (process.env.ENABLE_POSTMORTEM === "1") {
+      console.log("\n[Step 1b] Running post-mortem on recent picks...");
+      try {
+        const pmResult = await mlbPostmortemTask.triggerAndWait(
+          { date: yesterdayDate },
+          { idempotencyKey: `postmortem-${yesterdayDate}` },
+        );
+        if (pmResult.ok) {
+          const { created, reinforced, retired, skipped, notes } = pmResult.output;
+          console.log(`  Lessons: ${created} created, ${reinforced} reinforced, ${retired} retired, ${skipped} skipped`);
+          if (notes) console.log(`  ${notes}`);
+        } else {
+          console.warn(`  Post-mortem failed (non-fatal): ${String(pmResult.error)}`);
+        }
+      } catch (err) {
+        console.warn(`  Post-mortem error (non-fatal): ${err}`);
+      }
+    } else {
+      console.log("\n[Step 1b] Post-mortem disabled (set ENABLE_POSTMORTEM=1 to enable)");
+    }
+
     // ── STEP 2: Load running record + recent pick detail for self-learning ──────
     console.log("\n[Step 2] Loading performance data...");
     let runningRecord = { wins: 0, losses: 0, pushes: 0, roiUnits: 0 };
     let recentPicks: PickDetail[] = [];
+    let lessons: Lesson[] = [];
     try {
-      [runningRecord, recentPicks] = await Promise.all([
+      [runningRecord, recentPicks, lessons] = await Promise.all([
         getRunningRecord(30),
         getRecentPicksDetail(21),
+        getActiveLessons(),
       ]);
       const wr = (runningRecord.wins + runningRecord.losses) > 0
         ? Math.round(runningRecord.wins / (runningRecord.wins + runningRecord.losses) * 1000) / 10
         : 0;
       console.log(`  30-day record: ${runningRecord.wins}-${runningRecord.losses}-${runningRecord.pushes} (${wr}%)`);
       console.log(`  ${recentPicks.length} resolved picks loaded for calibration`);
+      console.log(`  ${lessons.length} active lessons loaded`);
     } catch (err) {
       console.warn(`  Could not load performance data: ${err}`);
     }
@@ -201,6 +229,7 @@ export const mlbOrchestratorTask = schedules.task({
       runningRecord,
       yesterdayScorecard: yesterdayScorecardText,
       recentPicks,
+      lessons,
     };
 
     const analyzeResult = useAggregator

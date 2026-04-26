@@ -6,11 +6,12 @@ import { task } from "@trigger.dev/sdk/v3";
 import Anthropic from "@anthropic-ai/sdk";
 import {
   ABSOLUTE_RULES_BLOCK, TEN_PILLAR_PROTOCOL, SINGLE_PICK_OUTPUT_SCHEMA,
-  calibrationRulesBlock, parseSinglePickJSON,
+  calibrationRulesBlock, institutionalKnowledgeBlock, parseSinglePickJSON,
   type GamePickResult,
 } from "../lib/analysis-shared.js";
 import type { CompiledGame } from "./mlb-fetch-data.js";
 import type { TavilyResults } from "../lib/tavily.js";
+import type { Lesson } from "../lib/notion.js";
 
 export interface GreenAnalystPayload {
   date: string;
@@ -19,6 +20,7 @@ export interface GreenAnalystPayload {
   performanceContext: string;
   yesterdayScorecard: string;
   runningRecord: { wins: number; losses: number; pushes: number; roiUnits: number };
+  lessons?: Lesson[];
 }
 
 export interface GreenAnalystResult {
@@ -37,6 +39,10 @@ ${ABSOLUTE_RULES_BLOCK}
 ${TEN_PILLAR_PROTOCOL}
 
 ${SINGLE_PICK_OUTPUT_SCHEMA}
+
+---
+
+${institutionalKnowledgeBlock(p.lessons ?? [])}
 
 ---
 
@@ -92,7 +98,7 @@ export const mlbGreenAnalystTask = task({
     let responseText = "";
     const stream = client.messages.stream({
       model: "claude-sonnet-4-6",
-      max_tokens: 8000,
+      max_tokens: 4000,
       messages: [{ role: "user", content: prompt }],
     });
 

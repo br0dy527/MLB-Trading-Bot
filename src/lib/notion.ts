@@ -34,6 +34,18 @@ function reportsDbId(): string {
   return id.replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, "$1-$2-$3-$4-$5");
 }
 
+function lessonsDsId(): string {
+  const id = process.env.NOTION_LESSONS_DS_ID;
+  if (!id) throw new Error("NOTION_LESSONS_DS_ID is not set");
+  return id;
+}
+
+function lessonsDbId(): string {
+  const id = process.env.NOTION_LESSONS_DB_ID;
+  if (!id) throw new Error("NOTION_LESSONS_DB_ID is not set");
+  return id.replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, "$1-$2-$3-$4-$5");
+}
+
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 export type BetTypeTag = "Bet of Day" | "Underdog" | "Top 3" | "Game Pick";
@@ -95,6 +107,35 @@ export interface RunningRecord {
   losses: number;
   pushes: number;
   roiUnits: number;
+}
+
+export type LessonCategory = "Pitching" | "Park/Weather" | "Bullpen" | "Lineup" | "Sharp/Public" | "Calibration" | "Streak" | "Totals" | "Other";
+export type LessonDirection = "BOOST" | "REDUCE" | "VETO" | "FLAG";
+
+export interface Lesson {
+  pageId: string;
+  title: string;
+  pattern: string;
+  evidence: string;
+  category: LessonCategory;
+  direction: LessonDirection;
+  magnitude: number;
+  timesReinforced: number;
+  winsWhenApplied: number;
+  lossesWhenApplied: number;
+  active: boolean;
+  created: string;
+  lastReinforced: string;
+}
+
+export interface LessonToCreate {
+  title: string;
+  pattern: string;
+  evidence: string;
+  category: LessonCategory;
+  direction: LessonDirection;
+  magnitude: number;
+  date: string; // YYYY-MM-DD
 }
 
 // ─── Pending pick resolution ──────────────────────────────────────────────────
@@ -472,6 +513,103 @@ export async function listDailyReports(): Promise<Array<{
 export async function archiveDailyReport(pageId: string): Promise<void> {
   const notion = getClient();
   await notion.pages.update({ page_id: pageId, archived: true } as any);
+}
+
+// ─── Lessons Learned (durable knowledge base) ───────────────────────────────
+
+/** Read all active lessons from the Lessons Learned DB. Returns empty array if
+ *  the env var isn't set yet (graceful no-op for old environments). */
+export async function getActiveLessons(): Promise<Lesson[]> {
+  if (!process.env.NOTION_LESSONS_DS_ID) return [];
+
+  const notion = getClient();
+  const lessons: Lesson[] = [];
+  let cursor: string | undefined;
+  do {
+    const res = await notion.dataSources.query({
+      data_source_id: lessonsDsId(),
+      start_cursor: cursor,
+      filter: { property: "Active", checkbox: { equals: true } },
+      sorts: [{ property: "Times Reinforced", direction: "descending" }],
+    } as any);
+
+    for (const page of res.results) {
+      if (page.object !== "page") continue;
+      const props = (page as any).properties;
+      lessons.push({
+        pageId: page.id,
+        title: props["Title"]?.title?.[0]?.plain_text ?? "",
+        pattern: props["Pattern"]?.rich_text?.[0]?.plain_text ?? "",
+        evidence: props["Evidence"]?.rich_text?.[0]?.plain_text ?? "",
+        category: (props["Category"]?.select?.name ?? "Other") as LessonCategory,
+        direction: (props["Direction"]?.select?.name ?? "FLAG") as LessonDirection,
+        magnitude: props["Magnitude"]?.number ?? 0,
+        timesReinforced: props["Times Reinforced"]?.number ?? 0,
+        winsWhenApplied: props["Wins When Applied"]?.number ?? 0,
+        lossesWhenApplied: props["Losses When Applied"]?.number ?? 0,
+        active: props["Active"]?.checkbox ?? false,
+        created: props["Created"]?.date?.start ?? "",
+        lastReinforced: props["Last Reinforced"]?.date?.start ?? "",
+      });
+    }
+    cursor = res.has_more ? (res.next_cursor ?? undefined) : undefined;
+  } while (cursor);
+
+  return lessons;
+}
+
+export async function createLesson(lesson: LessonToCreate): Promise<string> {
+  const notion = getClient();
+  const page = await notion.pages.create({
+    parent: { type: "database_id", database_id: lessonsDbId() },
+    properties: {
+      "Title":            { title: [{ text: { content: lesson.title } }] },
+      "Pattern":          { rich_text: [{ text: { content: lesson.pattern } }] },
+      "Evidence":         { rich_text: [{ text: { content: lesson.evidence } }] },
+      "Category":         { select: { name: lesson.category } },
+      "Direction":        { select: { name: lesson.direction } },
+      "Magnitude":        { number: lesson.magnitude },
+      "Times Reinforced": { number: 1 },
+      "Wins When Applied":   { number: 0 },
+      "Losses When Applied": { number: 0 },
+      "Active":           { checkbox: true },
+      "Created":          { date: { start: lesson.date } },
+      "Last Reinforced":  { date: { start: lesson.date } },
+    },
+  });
+  return page.id;
+}
+
+export async function reinforceLesson(pageId: string, date: string, newEvidence?: string): Promise<void> {
+  const notion = getClient();
+
+  const current = await notion.pages.retrieve({ page_id: pageId });
+  const props = (current as any).properties;
+  const prevTimes = props["Times Reinforced"]?.number ?? 0;
+  const prevEvidence = props["Evidence"]?.rich_text?.[0]?.plain_text ?? "";
+
+  const mergedEvidence = newEvidence
+    ? (prevEvidence ? `${prevEvidence}\n\n[${date}] ${newEvidence}` : `[${date}] ${newEvidence}`)
+    : prevEvidence;
+
+  await notion.pages.update({
+    page_id: pageId,
+    properties: {
+      "Times Reinforced": { number: prevTimes + 1 },
+      "Last Reinforced":  { date: { start: date } },
+      "Evidence":         { rich_text: [{ text: { content: mergedEvidence.slice(0, 1900) } }] },
+    },
+  });
+}
+
+export async function retireLesson(pageId: string): Promise<void> {
+  const notion = getClient();
+  await notion.pages.update({
+    page_id: pageId,
+    properties: {
+      "Active": { checkbox: false },
+    },
+  });
 }
 
 // ─── Create today's Daily Report page ────────────────────────────────────────
