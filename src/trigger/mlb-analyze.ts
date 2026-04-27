@@ -334,13 +334,13 @@ ${performanceContext}
 
 4. **Home/away bias check:** If one lean (home or away) is systematically underperforming, apply a \`-3\` adjustment to any pick that falls in that category today.
 
-5. **Bet type calibration:** If "Bet of Day" picks are losing at a higher rate than "Game Pick" level picks, this signals overconfidence in featuring — reduce BOTD confidence threshold from 80% to 75% for today.
+5. **Bet type calibration:** If "Bet of Day" picks are losing at a higher rate than "Game Pick" level picks, apply \`{"reason": "Calibration: BOTD overfit — reducing base", "delta": -4}\` to any pick rated ≥65% today. Calibration shifts individual confidence; the BOTD/Top 3 eligibility floor is fixed at 50%.
 
-6. **Recent streak adjustment:** If the last 10 picks are COLD (≤4W), apply a universal caution flag — reduce all confidence scores by 3 points and raise the BOTD threshold by 5 points. If HOT (≥7W), no change needed.
+6. **Recent streak adjustment:** If the last 10 picks are COLD (≤4W), apply \`{"reason": "Calibration: cold streak", "delta": -3}\` universally. If HOT (≥7W), no change needed.
 
 7. **Loss pattern recognition:** Review the last 5 losses above. Identify any recurring themes (e.g., "road teams in cold weather," "pitchers with small IP samples," "line moved against us"). For any game today that matches a loss pattern, apply \`{"reason": "Calibration: matches recent loss pattern — [describe it]", "delta": -5}\`.
 
-8. **ROI signal:** If estimated ROI is negative, you are systematically losing value — tighten eligibility criteria for today. Raise the minimum confidence for Top 3 from 60% to 65%, and for BOTD from 80% to 83%.
+8. **ROI signal:** If estimated ROI is negative, apply \`{"reason": "Calibration: negative ROI — tightening", "delta": -3}\` to all picks today. The BOTD/Top 3 eligibility floor stays fixed at 50% — calibration adjusts individual pick confidence, not the floor.
 
 9. **Totals calibration (Over/Under):** Check "Over bets" and "Under bets" win rates in the Bet Subtype Performance section above. Apply a \`{"reason": "Calibration: over/under subtype adj", "delta": N}\` adjustment proportional to the deviation from 52% break-even (same scale as other type adjustments: delta per point of deviation × 0.4, capped at ±10). If over win rate < 45% with 5+ sample, also add a gate: only allow OVER picks when P6 expected_total delta ≥ +1.5 runs. If under win rate > 60%, add an extra +3 to any UNDER pick today. If combined over+under win rate < 45% across 5+ samples, require 68% minimum final confidence for any totals bet. Over/Under bets are fully eligible for Bet of Day and Top 3 — evaluate on equal footing with ML bets.
 
@@ -437,7 +437,7 @@ function buildReportMarkdown(
     lines.push("---");
   } else {
     lines.push("## Bet of the Day");
-    lines.push("No pick reached 80% confidence threshold today.");
+    lines.push("No pick cleared the 50% confidence floor today — no Bet of the Day.");
     lines.push("---");
   }
 

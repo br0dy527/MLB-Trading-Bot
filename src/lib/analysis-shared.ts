@@ -255,10 +255,10 @@ ${performanceContext}
 2. **SP Matchup (P1) reliability:** If "Strong" SP picks are losing >50% of the time, apply \`{"reason": "Calibration: Strong SP edge not converting", "delta": -5}\` to any game otherwise rated Strong SP advantage.
 3. **Odds range edge:** If a range (e.g. heavy favorites ≤-115) underperforms vs implied probability, apply \`{"reason": "Calibration: heavy fav underperformance", "delta": -4}\` to any pick in that range.
 4. **Home/away bias check:** If one lean is systematically underperforming, apply \`-3\` to picks in that category.
-5. **Bet type calibration:** If "Bet of Day" picks lose at a higher rate than "Game Pick" level picks, treat as overconfidence in featuring — reduce BOTD threshold from 80% to 75%.
-6. **Recent streak:** If last 10 are COLD (≤4W), reduce all confidence by 3 and raise BOTD threshold +5. If HOT (≥7W), no change.
+5. **Bet type calibration:** If "Bet of Day" picks lose at a higher rate than "Game Pick" level picks, apply \`{"reason": "Calibration: BOTD overfit — reducing base", "delta": -4}\` to any pick rated ≥65% today. Calibration shifts individual confidence; the BOTD/Top 3 eligibility floor is fixed at 50%.
+6. **Recent streak:** If last 10 are COLD (≤4W), apply \`{"reason": "Calibration: cold streak", "delta": -3}\` universally. If HOT (≥7W), no change.
 7. **Loss pattern recognition:** If today's game matches a recurring theme from the last 5 losses, apply \`{"reason": "Calibration: matches recent loss pattern — [describe]", "delta": -5}\`.
-8. **ROI signal:** If estimated ROI is negative, raise minimum confidence for Top 3 to 65% and BOTD to 83%.
+8. **ROI signal:** If estimated ROI is negative, apply \`{"reason": "Calibration: negative ROI — tightening", "delta": -3}\` to all picks today. The BOTD/Top 3 eligibility floor stays fixed at 50% — calibration adjusts individual pick confidence, not the floor.
 9. **Totals calibration (Over/Under):** Apply a \`{"reason": "Calibration: over/under subtype adj", "delta": N}\` proportional to deviation from 52% break-even (delta per point of deviation × 0.4, capped at ±10). If over win rate < 45% with 5+ sample, gate OVERs to P6 expected_total delta ≥ +1.5. If under win rate > 60%, +3 to UNDERs. If combined < 45% across 5+ samples, require 68% min final confidence for any totals bet.
 
 Label each calibration adjustment with "Calibration:" prefix.`;
@@ -482,7 +482,7 @@ export function buildReportMarkdown(
     lines.push("---");
   } else {
     lines.push("## Bet of the Day");
-    lines.push("No pick reached 80% confidence threshold today.");
+    lines.push("No pick cleared the 50% confidence floor today — no Bet of the Day.");
     lines.push("---");
   }
 

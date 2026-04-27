@@ -180,11 +180,14 @@ export const mlbAggregatorTask = task({
     const featuresEligible = eligible.filter(p => !vetoedKeys.has(`${p.gameId}|${p.pickDescription}`));
 
     const sorted = [...featuresEligible].sort((a, b) => b.finalConfidence - a.finalConfidence);
-    const betOfDay = sorted[0] ?? null;
+    // BOTD and Top 3 require ≥50% confidence floor. UOTD has no floor — picks
+    // the best positive-odds bet regardless of confidence.
+    const featured = sorted.filter(p => p.finalConfidence >= 50);
+    const betOfDay = featured[0] ?? null;
     const underdog = featuresEligible
       .filter(p => p.odds > 0)
       .sort((a, b) => b.finalConfidence - a.finalConfidence)[0] ?? null;
-    const top3 = sorted.slice(0, 3);
+    const top3 = featured.slice(0, 3);
 
     if (vetoedKeys.size > 0) {
       console.log(`[aggregator] Red-team vetoed ${vetoedKeys.size} pick(s); re-ranked from remaining ${featuresEligible.length} eligible`);

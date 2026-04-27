@@ -53,9 +53,9 @@ Apply the full 10-pillar analysis + devil's advocate protocol from:
 Do not skip games or abbreviate the protocol. Every game gets the same rigor.
 
 ### 6. Rank picks and select featured bets
-- Bet of the Day: highest confidence eligible bet (>80%, or "Best Available" if none)
-- Underdog of the Day: best underdog moneyline (+odds)
-- Top 3: three highest confidence picks >60%
+- Bet of the Day: highest-confidence pick at ≥50% (skip if none clear floor)
+- Underdog of the Day: best underdog moneyline (+odds) — no confidence floor
+- Top 3: up to three highest-confidence picks at ≥50% (fewer if floor not cleared)
 - All Games: one pick per game
 
 ### 7. Publish to Notion

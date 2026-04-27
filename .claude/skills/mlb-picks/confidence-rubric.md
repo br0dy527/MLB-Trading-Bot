@@ -65,15 +65,14 @@ After computing final score, apply caps if conditions are met:
 
 | Confidence | Classification |
 |---|---|
-| >80% | Qualifies for **Bet of the Day** |
-| 70-80% | Strong bet — **Top 3 candidate** |
-| 60-70% | Marginal Top 3 — include with caveat |
-| 50-60% | **Best available for this game** — note low confidence explicitly |
-| <50% | Recommend avoiding — flag as LEAN ONLY |
+| ≥80% | Strong **Bet of the Day** candidate — high conviction |
+| 65-79% | Solid **Top 3 candidate** |
+| 50-64% | **Eligible for BOTD / Top 3** — note conviction level explicitly |
+| <50% | Ineligible for BOTD / Top 3 — flag as LEAN ONLY in All Games |
 
-**If no pick reaches 80%:** Label the highest-confidence pick "Best Available (below threshold)" in the Bet of the Day slot. Never fabricate confidence.
+**Eligibility floor:** BOTD and Top 3 require ≥50% final confidence. UOTD has no confidence floor — it picks the best positive-odds bet regardless.
 
-**If no pick reaches 60%:** Still pick the best available per game but note low conviction across the board.
+**If no pick reaches 50%:** Report no BOTD / Top 3 today. Continue with one pick per game in All Games. Never fabricate confidence to clear the floor.
 
 ---
 

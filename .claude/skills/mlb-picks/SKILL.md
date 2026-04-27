@@ -139,19 +139,18 @@ For games with NO eligible bets (all lines -121 or worse): Note "No eligible bet
 After analyzing all games, rank all picks by confidence score.
 
 **Bet of the Day:**
-- Must be the single highest-confidence pick
-- Must have confidence >80%
-- If no pick reaches 80%: label highest as "Best Available (below 80% threshold)"
+- Single highest-confidence pick at ≥50% confidence
+- If no pick clears 50%: report "No bet of the day — slate fails confidence floor"
 
 **Underdog of the Day:**
-- Best pick where the team is NOT the moneyline favorite (i.e., has positive ML odds or is the underdog)
+- Best pick where the team is NOT the moneyline favorite (positive ML odds)
 - Must be a genuine underdog — not just a small dog at -110
+- **No confidence floor** — UOTD picks the best positive-odds bet regardless of confidence. Flag picks below 50% as MONITOR, not a formal recommendation.
 - Can overlap with Top 3 (same pick can appear in both sections)
 
 **Top 3 Bets:**
-- Three highest-confidence eligible picks
-- Each must be >60% confidence
-- If fewer than 3 games have eligible picks, report however many qualify
+- Up to three highest-confidence picks at ≥50% confidence
+- If fewer than 3 picks clear 50%, report however many qualify
 
 **All Games picks:**
 - One pick per game (the best eligible bet for that game)
