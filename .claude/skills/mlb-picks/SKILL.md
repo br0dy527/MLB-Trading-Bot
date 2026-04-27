@@ -168,8 +168,64 @@ Use `notion-create-pages` with parent `data_source_id: 052dd723-1747-47c8-ada7-a
 Follow the exact content template from `notion-templates.md`. After creation:
 - Save the returned page ID and URL to `.tmp/report_ids_[date].json`
 
-**Afternoon run (file exists):** Update the existing page using `notion-update-page`.
-- Update the BOTD/UOTD/Top3 sections with confirmed-lineup picks
+**Afternoon run (file exists):** Skip page creation; instead, follow the **Afternoon Re-run Protocol** below.
+
+---
+
+## Afternoon Re-run Protocol
+
+If `.tmp/report_ids_[date].json` exists when this skill is invoked, you are in afternoon mode. The morning report already exists in Notion. Your job is to refine, not duplicate.
+
+### What to skip
+- Step 1 (Yesterday's Scorecard) — already resolved in the morning run.
+- Step 2 (Calibration update) — already loaded; do **not** re-run `update_calibration.py`.
+
+### What to do
+
+1. **Read the existing morning report.** Use `notion-fetch` on the page ID from `.tmp/report_ids_[date].json` to retrieve the full content. Parse out:
+   - The per-game pick from each `## All Games` entry (team, bet type, odds, confidence)
+   - Which games are tagged `⚠️ LINEUP PENDING` in the morning content
+   - The morning's BOTD, UOTD, and Top 3 selections
+
+2. **Re-run data compile** for fresh lineup/odds/injury data: `python3 tools/compile_game_data.py [date]` (overwrites the morning's `.tmp/game_data_[date].json`). Re-execute the Tavily/odds searches per Step 4.
+
+3. **Per-game re-analysis decision (the lineup-confirmed-skip rule):**
+   - **If the morning pick was made WITH a confirmed lineup** (`⚠️ LINEUP PENDING` was NOT in that game's morning entry, AND the new compile shows lineups still confirmed for the same starters): **carry the morning pick forward verbatim**. Do not re-fan to green/red analysis. Do not re-grade. The work is already done.
+   - **If the morning had `⚠️ LINEUP PENDING` for that game OR the confirmed lineup differs materially from morning's assumed lineup** (e.g. a regular sits, a different starter, a key injury just announced): **re-grade the game fully** — full 10-pillar analysis + devil's advocate, recalculating confidence using the now-confirmed lineup data. Drop the `⚠️ LINEUP PENDING` tag and apply the +10 lineup-confirmed boost back to the base score.
+
+4. **Recompute featured picks** (BOTD / UOTD / Top 3) from the union of carried-over + re-graded picks, using the same Step 6 logic.
+
+5. **Update the existing Notion report in place** using `notion-update-page` with the page ID from `.tmp/report_ids_[date].json`:
+   - Replace the entire page content (all sections — All Games, BOTD, UOTD, Top 3, Performance Context, Data Notes — not just featured picks)
+   - Add an `## ⚠️ UPDATED ANALYSIS — Afternoon re-run with confirmed lineups` banner at the top noting key changes from morning
+   - Update the "Lineups Confirmed" property checkbox to `true` when applicable
+   - Preserve the morning's Yesterday's Scorecard section verbatim — it does not change
+
+6. **Update Picks Tracker rows in place** for any pick whose confidence, odds, or selection changed:
+   - Find each existing row by querying the data source for `Date == [date] AND GameID == [game_id]`
+   - Use `notion-update-page` (not create) to overwrite Pick / Confidence / Odds / Bet Type / Notes
+   - Picks that are unchanged (carried-over from morning) stay as-is
+   - If the afternoon analysis demotes a pick out of BOTD/Top 3, remove that tag from the row's Bet Type multi-select but keep the row
+
+7. **Update `.tmp/report_ids_[date].json`** to set `lineups_confirmed: true` and `afternoon_updated_at: [ISO timestamp]`.
+
+8. **Output afternoon summary** (alongside the morning's content):
+
+```
+MLB Picks Afternoon Update — [date]
+
+Games re-analyzed: [N] | Carried over: [N] | Lineups now confirmed: [Y/N]
+
+Changes from morning:
+- BOTD: [old] → [new] (or "unchanged")
+- UOTD: [old] → [new] (or "unchanged")
+- Top 3 changes: [list any swaps]
+
+Notion report updated: [URL]
+```
+
+Then send a follow-up Gmail draft to `brody@br0dyllc.com` with subject `MLB Picks Afternoon Update — [date]` summarizing the changes.
+
 ---
 
 ## Step 8: Log Picks to Picks Tracker

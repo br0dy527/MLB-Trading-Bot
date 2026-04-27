@@ -1,12 +1,21 @@
-// Scheduled parent task — runs daily at 12:15 PM ET
-// 1. Scores yesterday's picks (Notion + MLB final scores)
-// 2. Fetches today's game data (child task)
-// 3. Runs analysis and publishes to Notion (child task)
+// Scheduled parent task — runs daily at 12:15 PM ET (morning) and 5:30 PM ET (afternoon).
+//
+// MORNING (12:15 PM ET):
+//   1. Scores yesterday's picks (Notion + MLB final scores)
+//   2. Runs post-mortem to update lessons learned
+//   3. Fetches today's game data
+//   4. Runs full analysis and publishes a fresh Daily Report
+//
+// AFTERNOON (5:30 PM ET):
+//   1. Skips yesterday-resolution + post-mortem (already done by morning)
+//   2. Re-fetches today's game data with confirmed lineups
+//   3. Re-runs analysis and updates morning's report + picks rows in place
+//      (no duplicate Notion pages or pick rows)
 
 import { schedules } from "@trigger.dev/sdk/v3";
 import { mlbFetchDataTask } from "./mlb-fetch-data.js";
 import { mlbAnalyzeTask } from "./mlb-analyze.js";
-import { mlbAggregatorTask } from "./mlb-aggregator.js";
+import { mlbAggregatorTask, type RunMode } from "./mlb-aggregator.js";
 import { mlbPostmortemTask } from "./mlb-postmortem.js";
 import {
   getAllPendingPicks, updatePickResult, getRunningRecord, getAllTimeRecord,
@@ -25,11 +34,29 @@ export const mlbOrchestratorTask = schedules.task({
   },
   maxDuration: 3600, // 1 hour max
 
-  run: async () => {
+  run: async () => runDailyPicks("morning"),
+});
+
+/** Afternoon re-run: refines morning's report with confirmed lineup data.
+ *  Updates the existing Daily Report page + Picks Tracker rows in place. */
+export const mlbOrchestratorAfternoonTask = schedules.task({
+  id: "mlb-orchestrator-afternoon",
+  cron: {
+    pattern: "30 17 * * *", // 5:30 PM ET
+    timezone: "America/New_York",
+    environments: ["PRODUCTION"],
+  },
+  maxDuration: 3600,
+
+  run: async () => runDailyPicks("afternoon"),
+});
+
+async function runDailyPicks(mode: RunMode) {
+  {
     const today = new Date().toISOString().split("T")[0] as string;
     const yesterdayDate = new Date(Date.now() - 86400000).toISOString().split("T")[0] as string;
 
-    console.log(`\nMLB Daily Picks — ${today}`);
+    console.log(`\nMLB Daily Picks — ${today} (mode: ${mode})`);
     console.log("=".repeat(40));
 
     // ── STEP 1: Resolve ALL pending picks (any date) + build scoreboard ─────
@@ -155,7 +182,10 @@ export const mlbOrchestratorTask = schedules.task({
     // ── STEP 1b: Run post-mortem on yesterday's resolved picks ──────────────────
     // Writes durable lessons to the Lessons Learned DB. Runs BEFORE step 2 so the
     // green/red analysts see freshly-written lessons in the same session.
-    if (process.env.ENABLE_POSTMORTEM === "1") {
+    // Afternoon runs skip this — already done by morning run.
+    if (mode === "afternoon") {
+      console.log("\n[Step 1b] Skipping post-mortem (afternoon mode — already ran in morning)");
+    } else if (process.env.ENABLE_POSTMORTEM === "1") {
       console.log("\n[Step 1b] Running post-mortem on recent picks...");
       try {
         const pmResult = await mlbPostmortemTask.triggerAndWait(
@@ -202,7 +232,7 @@ export const mlbOrchestratorTask = schedules.task({
 
     const fetchResult = await mlbFetchDataTask.triggerAndWait(
       { date: today },
-      { idempotencyKey: `mlb-fetch-${today}` }
+      { idempotencyKey: `mlb-fetch-${today}-${mode}` }
     );
 
     if (!fetchResult.ok) {
@@ -230,14 +260,15 @@ export const mlbOrchestratorTask = schedules.task({
       yesterdayScorecard: yesterdayScorecardText,
       recentPicks,
       lessons,
+      mode,
     };
 
     const analyzeResult = useAggregator
       ? await mlbAggregatorTask.triggerAndWait(analyzePayload, {
-          idempotencyKey: `mlb-aggregator-${today}`,
+          idempotencyKey: `mlb-aggregator-${today}-${mode}`,
         })
       : await mlbAnalyzeTask.triggerAndWait(analyzePayload, {
-          idempotencyKey: `mlb-analyze-${today}`,
+          idempotencyKey: `mlb-analyze-${today}-${mode}`,
         });
 
     if (!analyzeResult.ok) {
@@ -263,6 +294,7 @@ export const mlbOrchestratorTask = schedules.task({
 
     return {
       status: "success",
+      mode,
       date: today,
       notionPageUrl,
       betOfDay,
@@ -271,8 +303,8 @@ export const mlbOrchestratorTask = schedules.task({
       gamesAnalyzed: games.length,
       picksLogged,
     };
-  },
-});
+  }
+}
 
 // ─── Normalize Bet Type strings for robust filtering ─────────────────────────
 // Handles minor variations across runs (e.g. "Bet of the Day" vs "Bet of Day").

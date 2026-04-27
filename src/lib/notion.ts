@@ -459,6 +459,149 @@ export async function archivePicksForDate(date: string): Promise<number> {
   return archived;
 }
 
+// ─── Afternoon-mode helpers (update existing report + picks in place) ────────
+
+/** Find an existing Daily Report page for a given date. Returns the page ID, or
+ *  null if no report exists yet. Used by the afternoon orchestrator to decide
+ *  whether to create a new page or update the morning's. */
+export async function findReportByDate(date: string): Promise<string | null> {
+  const notion = getClient();
+  const formattedDate = formatReportTitleDate(date);
+  const res = await notion.dataSources.query({
+    data_source_id: reportsDsId(),
+    filter: { property: "Date", title: { contains: formattedDate } },
+    page_size: 1,
+  } as any);
+  return res.results[0]?.id ?? null;
+}
+
+/** Update an existing Daily Report page in place — both properties and body.
+ *  Used by the afternoon run to refine the morning's published report instead
+ *  of creating a duplicate. The body is fully replaced (existing children
+ *  deleted, new ones appended from data.bodyMarkdown). */
+export async function updateDailyReport(pageId: string, data: DailyReportData): Promise<void> {
+  const notion = getClient();
+
+  await notion.pages.update({
+    page_id: pageId,
+    properties: {
+      "Bet of Day":         { rich_text: [{ text: { content: data.betOfDay } }] },
+      "BOTD Confidence":    { number: data.botdConfidence },
+      "Underdog of Day":    { rich_text: [{ text: { content: data.underdogOfDay } }] },
+      "Top 3 Record":       { rich_text: [{ text: { content: data.top3Record } }] },
+      "Total Picks":        { number: data.totalPicks },
+      "Lineups Confirmed":  { checkbox: data.lineupsConfirmed },
+      "Games Analyzed":     { number: data.gamesAnalyzed },
+    },
+  });
+
+  // Replace body: list existing children, archive each, then append new ones
+  let cursor: string | undefined;
+  const childIds: string[] = [];
+  do {
+    const res = await notion.blocks.children.list({
+      block_id: pageId,
+      start_cursor: cursor,
+    } as any);
+    for (const block of res.results) {
+      childIds.push((block as any).id);
+    }
+    cursor = res.has_more ? (res.next_cursor ?? undefined) : undefined;
+  } while (cursor);
+
+  for (const id of childIds) {
+    try {
+      await notion.blocks.delete({ block_id: id });
+    } catch (err) {
+      console.warn(`updateDailyReport: failed to delete block ${id}: ${err}`);
+    }
+  }
+
+  const newBlocks = markdownToBlocks(data.bodyMarkdown);
+  if (newBlocks.length > 0) {
+    // Notion API limits to 100 children per append call
+    for (let i = 0; i < newBlocks.length; i += 100) {
+      await notion.blocks.children.append({
+        block_id: pageId,
+        children: newBlocks.slice(i, i + 100),
+      } as any);
+    }
+  }
+}
+
+/** Find every Picks Tracker row for a given date. Returns rows keyed by
+ *  pageId so the afternoon path can update them in place. */
+export interface ExistingPick {
+  pageId: string;
+  matchup: string;
+  pick: string;
+  betTypes: string[];
+  odds: number;
+  confidence: number;
+  gameId: number;
+  homeTeam: string;
+  awayTeam: string;
+  result: string;
+  notes: string;
+  spMatchupRating: string;
+}
+export async function findPicksByDate(date: string): Promise<ExistingPick[]> {
+  const notion = getClient();
+  const out: ExistingPick[] = [];
+  let cursor: string | undefined;
+  do {
+    const res = await notion.dataSources.query({
+      data_source_id: picksDsId(),
+      start_cursor: cursor,
+      filter: { property: "Date", date: { equals: date } },
+    } as any);
+    for (const page of res.results) {
+      if (page.object !== "page") continue;
+      const props = (page as any).properties;
+      out.push({
+        pageId: page.id,
+        matchup: props["Matchup"]?.title?.[0]?.plain_text ?? "",
+        pick: props["Pick"]?.rich_text?.[0]?.plain_text ?? "",
+        betTypes: readBetTypes(props),
+        odds: props["Odds"]?.number ?? 0,
+        confidence: props["Confidence"]?.number ?? 0,
+        gameId: props["GameID"]?.number ?? 0,
+        homeTeam: props["Home Team"]?.rich_text?.[0]?.plain_text ?? "",
+        awayTeam: props["Away Team"]?.rich_text?.[0]?.plain_text ?? "",
+        result: props["Result"]?.select?.name ?? "",
+        notes: props["Notes"]?.rich_text?.[0]?.plain_text ?? "",
+        spMatchupRating: props["SP Matchup Rating"]?.select?.name ?? "",
+      });
+    }
+    cursor = res.has_more ? (res.next_cursor ?? undefined) : undefined;
+  } while (cursor);
+  return out;
+}
+
+/** Update a Picks Tracker row's properties in place. Use this from the
+ *  afternoon path to refresh confidence/odds/bet-type tags without creating
+ *  duplicate rows. Pass only the fields you want to change. */
+export interface PickUpdate {
+  pick?: string;
+  betTypes?: BetTypeTag[];
+  odds?: number;
+  impliedProbPct?: number;
+  confidence?: number;
+  notes?: string;
+}
+export async function updatePickRow(pageId: string, update: PickUpdate): Promise<void> {
+  const notion = getClient();
+  const properties: Record<string, any> = {};
+  if (update.pick !== undefined) properties["Pick"] = { rich_text: [{ text: { content: update.pick } }] };
+  if (update.betTypes !== undefined) properties["Bet Type"] = { multi_select: update.betTypes.map(name => ({ name })) };
+  if (update.odds !== undefined) properties["Odds"] = { number: update.odds };
+  if (update.impliedProbPct !== undefined) properties["Implied Prob %"] = { number: Math.round(update.impliedProbPct * 10) / 10 };
+  if (update.confidence !== undefined) properties["Confidence"] = { number: update.confidence };
+  if (update.notes !== undefined) properties["Notes"] = { rich_text: [{ text: { content: update.notes.slice(0, 2000) } }] };
+  if (Object.keys(properties).length === 0) return;
+  await notion.pages.update({ page_id: pageId, properties });
+}
+
 /** Read the BOTD / UOTD text and Top 3 record as displayed on a prior Daily
  *  Report page. Returns null if the report doesn't exist. The scorecard uses
  *  this text verbatim instead of reconstructing it from the Picks Tracker, so

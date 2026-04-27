@@ -12,7 +12,21 @@
       "Bash(npx trigger.dev@latest env list --env prod)",
       "Bash(npx trigger.dev@latest deploy)",
       "Bash(npx trigger.dev@4.4.3 deploy)",
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(npx trigger.dev@4.4.3 env list --env prod)",
+      "Bash(npx tsx *)",
+      "Bash(git push *)",
+      "mcp__claude_ai_Notion__notion-update-page",
+      "mcp__claude_ai_Notion__notion-create-database",
+      "Bash(npm run *)",
+      "Bash(ls trigger/)",
+      "Bash(ls .claude/skills/)",
+      "Bash(npx trigger.dev@4.4.3 --help)",
+      "Bash(python3 tools/compile_game_data.py 2026-04-27)",
+      "Bash(python3 -c ' *)",
+      "WebSearch",
+      "mcp__claude_ai_Gmail__create_draft"
     ]
   }
 }

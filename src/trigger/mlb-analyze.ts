@@ -584,6 +584,9 @@ export const mlbAnalyzeTask = task({
       if (betTypes.length === 0) betTypes.push("Game Pick");
 
       try {
+        const stampedNotes = p.lineupPending && !/lineup\s*pending/i.test(p.notes ?? "")
+          ? `⚠️ LINEUP PENDING — ${p.notes ?? ""}`
+          : (p.notes ?? "");
         await logPick({
           matchup: p.matchup,
           date: fetchResult.date,
@@ -596,7 +599,7 @@ export const mlbAnalyzeTask = task({
           homeTeam: p.homeTeam,
           awayTeam: p.awayTeam,
           gameId: p.gameId,
-          notes: p.notes,
+          notes: stampedNotes,
           reportUrl: notionPageUrl,
         });
         picksLogged++;
