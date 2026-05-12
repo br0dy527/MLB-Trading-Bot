@@ -20,10 +20,10 @@ import { mlbPostmortemTask } from "./mlb-postmortem.js";
 import {
   getAllPendingPicks, updatePickResult, getRunningRecord, getAllTimeRecord,
   getRecentPicksDetail, updateDailyReportResults, getResolvedPicksByDate,
-  getDailyReportSummary, getActiveLessons,
+  getDailyReportSummary, getActiveLessons, findReportsWithPendingResults,
   type PickDetail, type Lesson,
 } from "../lib/notion.js";
-import { fetchFinalScores } from "../lib/mlb-api.js";
+import { fetchFinalScores, fetchFinalScoreByGameId } from "../lib/mlb-api.js";
 
 export const mlbOrchestratorTask = schedules.task({
   id: "mlb-orchestrator",
@@ -84,7 +84,19 @@ async function runDailyPicks(mode: RunMode) {
 
         for (const pick of pendingPicks) {
           const scoreMap = scoresByDate.get(pick.date);
-          const score = scoreMap?.get(pick.gameId);
+          let score = scoreMap?.get(pick.gameId);
+
+          // Fallback: postponed/suspended games complete on a different officialDate
+          // than originally scheduled (e.g. rainout 5/5 → played 5/7). The date-scoped
+          // fetch misses them, so look up directly by gameId.
+          if (!score && pick.gameId) {
+            const direct = await fetchFinalScoreByGameId(pick.gameId);
+            if (direct) {
+              score = direct;
+              console.log(`  [${pick.date}] ${pick.matchup} — resolved via gameId fallback (game played on different date)`);
+            }
+          }
+
           if (!score) {
             console.warn(`  No final score for game ${pick.gameId} (${pick.matchup} on ${pick.date})`);
             continue;
@@ -97,10 +109,23 @@ async function runDailyPicks(mode: RunMode) {
         }
       }
 
-      // Update Daily Report pages for every date that had resolutions this run,
-      // plus yesterday (so the scorecard always reflects the latest state).
+      // Update Daily Report pages for every date that:
+      //   - had resolutions in this run
+      //   - is yesterday (scorecard always reflects the latest state)
+      //   - has a Daily Report still showing BOTD Result=Pending (stale, e.g.
+      //     report was created for a date whose picks resolved later by a path
+      //     that didn't refresh the report — sweep those defensively)
       const datesToUpdate = new Set<string>(allResolved.map(r => r.date).filter(Boolean));
       datesToUpdate.add(yesterdayDate);
+      try {
+        const stalePendingDates = await findReportsWithPendingResults();
+        for (const d of stalePendingDates) datesToUpdate.add(d);
+        if (stalePendingDates.length > 0) {
+          console.log(`  Sweeping ${stalePendingDates.length} stale Pending reports: ${stalePendingDates.join(", ")}`);
+        }
+      } catch (err) {
+        console.warn(`  Stale-Pending sweep failed (non-fatal): ${err}`);
+      }
 
       const summarizeDate = async (d: string) => {
         const all = await getResolvedPicksByDate(d);

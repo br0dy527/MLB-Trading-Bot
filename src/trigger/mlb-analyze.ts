@@ -540,11 +540,14 @@ export const mlbAnalyzeTask = task({
     const eligible = picks.filter(p => p.eligible && !p.noEligibleBet);
     const sorted = [...eligible].sort((a, b) => b.finalConfidence - a.finalConfidence);
 
-    const betOfDay = sorted[0] ?? null;
+    // BOTD and Top 3 require ≥50% confidence floor. UOTD has no floor —
+    // picks the best positive-odds bet regardless of confidence.
+    const featured = sorted.filter(p => p.finalConfidence >= 50);
+    const betOfDay = featured[0] ?? null;
     const underdog = eligible
       .filter(p => p.odds > 0)
       .sort((a, b) => b.finalConfidence - a.finalConfidence)[0] ?? null;
-    const top3 = sorted.slice(0, 3);
+    const top3 = featured.slice(0, 3);
 
     // Build report
     const bodyMarkdown = buildReportMarkdown(picks, betOfDay, underdog, top3, yesterdayScorecard, runningRecord);

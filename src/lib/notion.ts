@@ -461,6 +461,32 @@ export async function archivePicksForDate(date: string): Promise<number> {
 
 // ─── Afternoon-mode helpers (update existing report + picks in place) ────────
 
+/** Returns the ISO dates of every Daily Report whose BOTD Result is still
+ *  "Pending" — even if the underlying picks are already resolved. Used by the
+ *  orchestrator's resolve step to sweep stale reports and refresh their
+ *  Result fields, so we never accumulate "Pending" reports for past dates. */
+export async function findReportsWithPendingResults(): Promise<string[]> {
+  const notion = getClient();
+  const out: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const res = await notion.dataSources.query({
+      data_source_id: reportsDsId(),
+      start_cursor: cursor,
+      filter: { property: "BOTD Result", select: { equals: "Pending" } },
+    } as any);
+    for (const page of res.results) {
+      if (page.object !== "page") continue;
+      const props = (page as any).properties;
+      const title: string = props?.Date?.title?.[0]?.plain_text ?? "";
+      const iso = parseReportTitleDate(title);
+      if (iso) out.push(iso);
+    }
+    cursor = res.has_more ? (res.next_cursor ?? undefined) : undefined;
+  } while (cursor);
+  return out;
+}
+
 /** Find an existing Daily Report page for a given date. Returns the page ID, or
  *  null if no report exists yet. Used by the afternoon orchestrator to decide
  *  whether to create a new page or update the morning's. */
@@ -654,6 +680,12 @@ export async function listDailyReports(): Promise<Array<{
 
 /** Archive a Daily Report page (soft-delete in Notion). */
 export async function archiveDailyReport(pageId: string): Promise<void> {
+  const notion = getClient();
+  await notion.pages.update({ page_id: pageId, archived: true } as any);
+}
+
+/** Archive a single Picks Tracker row by pageId. */
+export async function archivePickRow(pageId: string): Promise<void> {
   const notion = getClient();
   await notion.pages.update({ page_id: pageId, archived: true } as any);
 }

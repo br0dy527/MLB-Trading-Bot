@@ -26,7 +26,13 @@
       "Bash(python3 tools/compile_game_data.py 2026-04-27)",
       "Bash(python3 -c ' *)",
       "WebSearch",
-      "mcp__claude_ai_Gmail__create_draft"
+      "mcp__claude_ai_Gmail__create_draft",
+      "Bash(npx trigger.dev@4.4.3 list-schedules)",
+      "Bash(curl -s \"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date=2026-05-05&hydrate=linescore,team&gameType=R\")",
+      "Bash(curl -s \"https://statsapi.mlb.com/api/v1.1/game/824362/feed/live\")",
+      "Bash(curl -s https://statsapi.mlb.com/api/v1.1/game/__TRACKED_VAR__/feed/live)",
+      "Bash(curl -s \"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date=2026-05-09&hydrate=linescore,team&gameType=R\")",
+      "Bash(python3 *)"
     ]
   }
 }

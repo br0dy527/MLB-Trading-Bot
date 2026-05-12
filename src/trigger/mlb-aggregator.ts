@@ -6,6 +6,7 @@ import { task } from "@trigger.dev/sdk/v3";
 import {
   createDailyReport, logPick, archivePicksForDate,
   findReportByDate, updateDailyReport, findPicksByDate, updatePickRow,
+  archivePickRow,
   type DailyReportData, type PickToLog, type PickDetail, type Lesson,
   type BetTypeTag,
 } from "../lib/notion.js";
@@ -298,7 +299,55 @@ export const mlbAggregatorTask = task({
     if (mode === "afternoon" && existingReportPageId) {
       // Update existing rows by GameID; create new for unmatched (defensive)
       const existingPicks = await findPicksByDate(fetchResult.date);
-      const existingByGameId = new Map(existingPicks.map(p => [p.gameId, p]));
+
+      // Defensive dedupe: if multiple rows exist for the same (date, gameId),
+      // keep the newest and archive the rest. Prevents accumulation of stale
+      // duplicates from any prior run that wasn't fully idempotent.
+      const groupedByGameId = new Map<number, typeof existingPicks>();
+      for (const ep of existingPicks) {
+        if (!ep.gameId) continue; // legacy rows without a GameID stay as-is
+        const arr = groupedByGameId.get(ep.gameId) ?? [];
+        arr.push(ep);
+        groupedByGameId.set(ep.gameId, arr);
+      }
+      const existingByGameId = new Map<number, typeof existingPicks[number]>();
+      let dedupedCount = 0;
+      for (const [gid, group] of groupedByGameId) {
+        // Pick the highest-confidence row as canonical — afternoon updates
+        // overwrite confidence, so the latest write has the highest value
+        // in the common case.
+        group.sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0));
+        existingByGameId.set(gid, group[0]!);
+        for (const dupe of group.slice(1)) {
+          try {
+            await archivePickRow(dupe.pageId);
+            dedupedCount++;
+          } catch (err) {
+            console.warn(`[aggregator] failed to archive duplicate pick ${dupe.pageId}: ${err}`);
+          }
+        }
+      }
+      if (dedupedCount > 0) {
+        console.log(`[aggregator] Archived ${dedupedCount} duplicate Picks Tracker rows (defensive dedupe before afternoon update)`);
+      }
+
+      // Clear featured tags (Bet of Day / Underdog / Top 3) from any existing
+      // pick whose gameId is NOT in the current eligible set. This prevents
+      // a morning-tagged BOTD/UOTD/Top 3 from lingering when the afternoon
+      // demotes it (e.g. game becomes noEligibleBet after a key injury).
+      const currentEligibleGameIds = new Set(eligiblePicks.map(p => p.gameId));
+      for (const ep of existingByGameId.values()) {
+        if (currentEligibleGameIds.has(ep.gameId)) continue;
+        const cleared = ep.betTypes.filter(t => t !== "Bet of Day" && t !== "Underdog" && t !== "Top 3");
+        if (cleared.length === ep.betTypes.length) continue;
+        if (cleared.length === 0) cleared.push("Game Pick");
+        try {
+          await updatePickRow(ep.pageId, { betTypes: cleared as BetTypeTag[] });
+          console.log(`[aggregator] Cleared stale featured tags on ${ep.matchup} gid=${ep.gameId} (no longer eligible)`);
+        } catch (err) {
+          console.warn(`[aggregator] failed to clear stale tags on ${ep.pageId}: ${err}`);
+        }
+      }
 
       for (const p of eligiblePicks) {
         const betTypes: BetTypeTag[] = [];

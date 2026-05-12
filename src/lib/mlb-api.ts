@@ -382,6 +382,33 @@ export async function fetchWeather(lat: number, lon: number, date: string, gameT
   }
 }
 
+/** Fetch a single game's final score directly by gamePk.
+ *  Returns null if the game is not Final (in progress, postponed, suspended).
+ *  Used as a fallback when fetchFinalScores(date) misses a game — happens when
+ *  a game's officialDate differs from its originally scheduled date (rainouts,
+ *  doubleheader splits, suspended-and-resumed games). */
+export async function fetchFinalScoreByGameId(gameId: number): Promise<FinalScore | null> {
+  const url = `https://statsapi.mlb.com/api/v1.1/game/${gameId}/feed/live`;
+  const res = await fetch(url);
+  if (!res.ok) return null;
+
+  const data = await res.json() as any;
+  const status = data.gameData?.status?.abstractGameState;
+  if (status !== "Final") return null;
+
+  const home = data.liveData?.linescore?.teams?.home?.runs;
+  const away = data.liveData?.linescore?.teams?.away?.runs;
+  if (home == null || away == null) return null;
+
+  return {
+    gameId,
+    homeTeamId: data.gameData?.teams?.home?.id ?? 0,
+    awayTeamId: data.gameData?.teams?.away?.id ?? 0,
+    homeScore: Number(home),
+    awayScore: Number(away),
+  };
+}
+
 export async function fetchFinalScores(date: string): Promise<FinalScore[]> {
   const url = `https://statsapi.mlb.com/api/v1/schedule?sportId=1&date=${date}&hydrate=linescore,team&gameType=R`;
   const res = await fetch(url);
